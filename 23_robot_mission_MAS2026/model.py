@@ -1,11 +1,9 @@
 # Group: 23
 # Date: 2026-03-16
-# Members: 
-    # Khalil Ben Gamra
-    # Sarra Sakgi
-    # Ali Baklouti
-
-
+# Members:
+#   Khalil Ben Gamra
+#   Sarra Sakgi
+#   Ali Baklouti
 
 import random
 from mesa import Model
@@ -20,11 +18,12 @@ from objects import RadioactivityAgent, WasteAgent, WasteDisposalZone
 class RobotMission(Model):
     """
     Modèle principal de la mission des robots.
-    Il contient :
-    - la grille
-    - les agents robots
-    - les objets passifs (déchets, radioactivité, zone de dépôt)
-    - la logique d'exécution des actions via do()
+
+    Responsabilités :
+    - créer et gérer la grille (radioactivité, déchets, zone de dépôt)
+    - instancier les robots avec les bons paramètres de zone
+    - exposer do() pour que les agents puissent agir sur l'environnement
+    - collecter des statistiques via DataCollector
     """
 
     def __init__(
@@ -35,7 +34,7 @@ class RobotMission(Model):
         n_yellow_robots=2,
         n_red_robots=1,
         initial_green_waste=12,
-        seed=None
+        seed=None,
     ):
         super().__init__()
 
@@ -48,200 +47,204 @@ class RobotMission(Model):
         self.schedule = RandomActivation(self)
         self.running = True
 
-        self.current_id = 0
+        # Compteur d'identifiants pour les objets passifs (objects.py)
+        # Les agents Mesa 2+ (agents.py) gèrent leur propre identifiant.
+        self._next_obj_id = 0
 
-        # Position de la zone finale de dépôt
+        # Position de la zone de dépôt final (colonne la plus à l'est)
         self.disposal_pos = None
 
-        # Statistiques utiles
+        # Statistiques globales
         self.stored_red_waste = 0
         self.transformed_green_to_yellow = 0
         self.transformed_yellow_to_red = 0
 
-        # DataCollector pour les graphiques
+        # DataCollector
         self.datacollector = DataCollector(
             model_reporters={
-                "Green waste": self.count_green_waste,
-                "Yellow waste": self.count_yellow_waste,
-                "Red waste": self.count_red_waste,
-                "Stored red waste": lambda m: m.stored_red_waste
+                "Green waste":      self.count_green_waste,
+                "Yellow waste":     self.count_yellow_waste,
+                "Red waste":        self.count_red_waste,
+                "Stored red waste": lambda m: m.stored_red_waste,
             }
         )
 
-        # Créer le fond de carte : radioactivité / zones
+        # Construction de l'environnement
         self._create_radioactivity_map()
-
-        # Créer la case de dépôt finale
         self._create_disposal_zone()
-
-        # Ajouter les déchets verts initiaux
         self._create_initial_green_waste(initial_green_waste)
-
-        # Ajouter les robots
         self._create_robots(n_green_robots, n_yellow_robots, n_red_robots)
 
         # Collecte initiale
         self.datacollector.collect(self)
 
-    # OUTILS GÉNÉRAUX
  
-    def next_id(self):
-        self.current_id += 1
-        return self.current_id
+    #  Utilitaires internes                                          
+
+
+    def _obj_id(self):
+        """Renvoie un identifiant unique pour les agents passifs (objects.py)."""
+        self._next_obj_id += 1
+        return self._next_obj_id
 
     def get_zone_from_x(self, x):
         """
-        Découpe la grille en 3 bandes verticales :
-        - z1 à l'ouest
-        - z2 au milieu
-        - z3 à l'est
+        Découpe la grille en 3 bandes verticales égales :
+          z1 (ouest)  → x < width//3
+          z2 (milieu) → width//3 <= x < 2*width//3
+          z3 (est)    → x >= 2*width//3
         """
         third = self.width // 3
-
         if x < third:
             return "z1"
         elif x < 2 * third:
             return "z2"
         return "z3"
 
-    def get_random_empty_position(self, allowed_zones=None):
-        """
-        Renvoie une position aléatoire, éventuellement limitée à certaines zones.
-        """
-        candidates = []
+    def _zone_x_bounds(self, zone):
+        """Retourne (x_min, x_max) inclus pour une zone donnée."""
+        third = self.width // 3
+        if zone == "z1":
+            return 0, third - 1
+        elif zone == "z2":
+            return third, 2 * third - 1
+        else:  # z3
+            return 2 * third, self.width - 1
 
-        for x in range(self.width):
-            for y in range(self.height):
-                zone = self.get_zone_from_x(x)
-                if allowed_zones is not None and zone not in allowed_zones:
-                    continue
-                candidates.append((x, y))
-
+    def get_random_position(self, allowed_zones=None):
+        """
+        Renvoie une position aléatoire dans la grille,
+        éventuellement limitée à certaines zones (ensemble de chaînes).
+        Plusieurs objets peuvent partager la même case (MultiGrid).
+        """
+        candidates = [
+            (x, y)
+            for x in range(self.width)
+            for y in range(self.height)
+            if allowed_zones is None or self.get_zone_from_x(x) in allowed_zones
+        ]
         return random.choice(candidates) if candidates else None
 
 
-    # CRÉATION DE L'ENVIRONNEMENT
-  
+    #  Construction de l'environnement                                     
+
+
     def _create_radioactivity_map(self):
-        """
-        Place un objet RadioactivityAgent sur chaque case.
-        Chaque objet indique :
-        - sa zone
-        - son niveau de radioactivité
-        """
+        """Place un RadioactivityAgent sur chaque case de la grille."""
         for x in range(self.width):
             for y in range(self.height):
                 zone = self.get_zone_from_x(x)
-
-                if zone == "z1":
-                    radioactivity = random.uniform(0.0, 0.33)
-                elif zone == "z2":
-                    radioactivity = random.uniform(0.33, 0.66)
-                else:
-                    radioactivity = random.uniform(0.66, 1.0)
-
-                radio_obj = RadioactivityAgent(
-                    unique_id=self.next_id(),
+                obj = RadioactivityAgent(
+                    unique_id=self._obj_id(),
                     model=self,
                     zone=zone,
-                    radioactivity=radioactivity
                 )
-                self.grid.place_agent(radio_obj, (x, y))
+                self.grid.place_agent(obj, (x, y))
 
     def _create_disposal_zone(self):
         """
-        La zone de dépôt final doit être le plus à l'est possible.
-        On choisit une case aléatoire dans la dernière colonne.
+        Place la zone de dépôt sur une case aléatoire
+        de la colonne la plus à l'est (x = width - 1).
         """
         x = self.width - 1
         y = random.randrange(self.height)
         self.disposal_pos = (x, y)
-
-        disposal = WasteDisposalZone(
-            unique_id=self.next_id(),
-            model=self
-        )
-        self.grid.place_agent(disposal, self.disposal_pos)
+        obj = WasteDisposalZone(unique_id=self._obj_id(), model=self)
+        self.grid.place_agent(obj, self.disposal_pos)
 
     def _create_initial_green_waste(self, n):
-        """
-        Les déchets initiaux verts sont placés en z1.
-        """
+        """Place n déchets verts aléatoirement en zone z1."""
         for _ in range(n):
-            pos = self.get_random_empty_position(allowed_zones={"z1"})
+            pos = self.get_random_position(allowed_zones={"z1"})
             waste = WasteAgent(
-                unique_id=self.next_id(),
+                unique_id=self._obj_id(),
                 model=self,
-                waste_type="green"
+                waste_type="green",
             )
             self.grid.place_agent(waste, pos)
 
     def _create_robots(self, n_green, n_yellow, n_red):
         """
-        Place les robots dans des zones cohérentes avec leurs déplacements.
+        Instancie les robots avec les bornes de zone correctes
+        et les ajoute au scheduler.
+
+        Signatures des constructeurs (agents.py) :
+          GreenAgent(model, x_min, x_max)
+          YellowAgent(model, x_min, x_max)
+          RedAgent(model, x_min, x_max, disposal_zone_pos)
         """
+        # Bornes de chaque zone
+        z1_xmin, z1_xmax = self._zone_x_bounds("z1")
+        z2_xmin, z2_xmax = self._zone_x_bounds("z2")
+        z3_xmin, z3_xmax = self._zone_x_bounds("z3")
+
+        # Green : limité à z1
         for _ in range(n_green):
-            agent = GreenAgent(self.next_id(), self)
-            pos = self.get_random_empty_position(allowed_zones={"z1"})
+            agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax)
+            pos = self.get_random_position(allowed_zones={"z1"})
             self.grid.place_agent(agent, pos)
             self.schedule.add(agent)
-            agent.percepts = self.build_percepts(agent)
 
+        # Yellow : accès à z1 et z2
         for _ in range(n_yellow):
-            agent = YellowAgent(self.next_id(), self)
-            pos = self.get_random_empty_position(allowed_zones={"z1", "z2"})
+            agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax)
+            pos = self.get_random_position(allowed_zones={"z1", "z2"})
             self.grid.place_agent(agent, pos)
             self.schedule.add(agent)
-            agent.percepts = self.build_percepts(agent)
 
+        # Red : accès à toute la grille (z1, z2, z3)
         for _ in range(n_red):
-            agent = RedAgent(self.next_id(), self)
-            pos = self.get_random_empty_position(allowed_zones={"z1", "z2", "z3"})
+            agent = RedAgent(
+                self,
+                x_min=z1_xmin,
+                x_max=z3_xmax,
+                disposal_zone_pos=self.disposal_pos,
+            )
+            pos = self.get_random_position(allowed_zones={"z1", "z2", "z3"})
             self.grid.place_agent(agent, pos)
             self.schedule.add(agent)
-            agent.percepts = self.build_percepts(agent)
 
-    # BOUCLE DE SIMULATION
+
+    #  Boucle de simulation                                               
  
+
     def step(self):
         self.schedule.step()
         self.datacollector.collect(self)
 
-   
-    # PERCEPTS
  
+    #  Percepts                                                           
+ 
+
     def build_percepts(self, agent):
         """
-        Construit le dictionnaire des percepts renvoyé au robot.
-        On inclut :
-        - la position du robot
-        - la zone actuelle
-        - la position de la disposal zone
-        - le contenu de la case courante et des cases adjacentes
+        Construit le dictionnaire de percepts renvoyé à un robot.
+        Contenu pour chaque case visible (case courante + voisins Von Neumann) :
+          - wastes       : liste des types de déchets présents
+          - robots       : liste des types de robots présents
+          - zone         : identifiant de zone ("z1" / "z2" / "z3")
+          - radioactivity: niveau de radioactivité (float)
+          - is_disposal  : booléen, True si c'est la zone de dépôt
         """
-        visible_positions = [agent.pos]
-        visible_positions += self.grid.get_neighborhood(
-            agent.pos,
-            moore=False,
-            include_center=False
+        visible = [agent.pos] + list(
+            self.grid.get_neighborhood(agent.pos, moore=False, include_center=False)
         )
 
         tiles = {}
+        for pos in visible:
+            wastes, robots = [], []
+            zone, radioactivity, is_disposal = None, None, False
 
-        for pos in visible_positions:
-            contents = self.grid.get_cell_list_contents([pos])
-
-            wastes = []
-            robots = []
-            zone = None
-            is_disposal = False
-            radioactivity = None
-
-            for obj in contents:
+            for obj in self.grid.get_cell_list_contents([pos]):
                 if isinstance(obj, WasteAgent):
                     wastes.append(obj.waste_type)
                 elif isinstance(obj, (GreenAgent, YellowAgent, RedAgent)):
-                    robots.append(obj.robot_type)
+                    robot_type = (
+                        "green" if isinstance(obj, GreenAgent)
+                        else "yellow" if isinstance(obj, YellowAgent)
+                        else "red"
+                    )
+                    robots.append(robot_type)
                 elif isinstance(obj, RadioactivityAgent):
                     zone = obj.zone
                     radioactivity = obj.radioactivity
@@ -249,161 +252,151 @@ class RobotMission(Model):
                     is_disposal = True
 
             tiles[pos] = {
-                "wastes": wastes,
-                "robots": robots,
-                "zone": zone,
+                "wastes":        wastes,
+                "robots":        robots,
+                "zone":          zone,
                 "radioactivity": radioactivity,
-                "is_disposal": is_disposal
+                "is_disposal":   is_disposal,
             }
 
-        current_zone = tiles[agent.pos]["zone"]
-
         return {
-            "self_pos": agent.pos,
-            "current_zone": current_zone,
+            "self_pos":     agent.pos,
+            "current_zone": tiles[agent.pos]["zone"],
             "disposal_pos": self.disposal_pos,
-            "tiles": tiles
+            "tiles":        tiles,
         }
 
-
-    # EXÉCUTION DES ACTIONS
+    #  Exécution des actions — méthode do()                               
+  
 
     def do(self, agent, action):
         """
-        Exécute une action demandée par un robot.
-        Le modèle vérifie si l'action est faisable.
-        Ensuite il modifie l'environnement et/ou l'inventaire du robot.
-        Puis il renvoie les nouveaux percepts.
+        Point d'entrée unique pour toute action d'un robot.
+
+        Le modèle est responsable des effets sur la grille
+        (ajouter/supprimer des WasteAgent).
+        Les robots gèrent eux-mêmes leur inventaire interne
+        (n_*_wastes) dans agents.py.
+
+        Retourne les nouveaux percepts après exécution.
         """
         if action is None:
             return self.build_percepts(agent)
 
-        action_type = action.get("type")
+        dispatch = {
+            "move":      self._do_move,
+            "pick":      self._do_pick,
+            "transform": self._do_transform,
+            "drop":      self._do_drop,
+            "wait":      lambda a, act: None,
+        }
 
-        if action_type == "move":
-            self._do_move(agent, action)
-
-        elif action_type == "pick":
-            self._do_pick(agent)
-
-        elif action_type == "transform":
-            self._do_transform(agent)
-
-        elif action_type == "drop":
-            self._do_drop(agent)
-
-        elif action_type == "wait":
-            pass
+        handler = dispatch.get(action if isinstance(action, str) else action.get("type"))
+        if handler:
+            handler(agent, action)
 
         return self.build_percepts(agent)
 
+    # MOVE 
 
-    # ACTION : MOVE
-    
     def _do_move(self, agent, action):
-        new_pos = action.get("to")
-
+        """
+        Déplace l'agent vers une case adjacente autorisée.
+        action : {"type": "move", "to": (x, y)}
+        """
+        new_pos = action.get("to") if isinstance(action, dict) else None
         if new_pos is None:
             return
 
-        # vérifier que la case cible est dans la grille
-        if not self.grid.out_of_bounds(new_pos):
-            pass
+        # Vérification : case dans la grille
+        if self.grid.out_of_bounds(new_pos):
+            return
+
+        # Vérification : case adjacente (distance de Manhattan == 1)
+        if not self._is_adjacent(agent.pos, new_pos):
+            return
+
+        # Vérification : case dans les bornes de zone de l'agent
+        nx = new_pos[0]
+        if not (agent.x_min <= nx <= agent.x_max):
+            return
+
+        self.grid.move_agent(agent, new_pos)
+
+    #  PICK 
+
+    def _do_pick(self, agent, action=None):
+        """
+        Retire un déchet de la grille sur la case de l'agent.
+        L'inventaire est mis à jour par l'agent lui-même dans act().
+        
+        Le modèle vérifie qu'il existe bien un déchet ramassable
+        avant de le supprimer de la grille.
+        """
+        # Détermine le type de déchet attendu selon le type de robot
+        if isinstance(agent, GreenAgent):
+            target = "green"
+        elif isinstance(agent, YellowAgent):
+            target = "yellow"
+        elif isinstance(agent, RedAgent):
+            target = "red"
         else:
             return
 
-        # vérifier que la case est adjacente
-        if not self.is_adjacent(agent.pos, new_pos):
-            return
-
-        # vérifier que la zone cible est autorisée
-        new_zone = self.get_zone_from_x(new_pos[0])
-        if new_zone not in agent.allowed_zones:
-            return
-
-        #  si tout est bon, on déplace l'agent
-        self.grid.move_agent(agent, new_pos)
-
-
-    # ACTION : PICK
-  
-    def _do_pick(self, agent):
-        """
-        Le robot ramasse un déchet du type qu'il cherche.
-        """
-        cell_contents = self.grid.get_cell_list_contents([agent.pos])
-
-        # si le robot a déjà la quantité max du déchet cible, il ne prend plus
-        if agent.inventory[agent.target_waste] >= agent.capacity:
-            return
-
-        for obj in cell_contents:
-            if isinstance(obj, WasteAgent) and obj.waste_type == agent.target_waste:
+        for obj in self.grid.get_cell_list_contents([agent.pos]):
+            if isinstance(obj, WasteAgent) and obj.waste_type == target:
                 self.grid.remove_agent(obj)
-                agent.inventory[agent.target_waste] += 1
-                return
+                return  # on ne retire qu'un seul déchet par action
 
+    # TRANSFORM
 
-    # ACTION : TRANSFORM
-
-    def _do_transform(self, agent):
+    def _do_transform(self, agent, action=None):
         """
-        Green robot : 2 green -> 1 yellow
-        Yellow robot : 2 yellow -> 1 red
-        Red robot : rien
+        Transformation : pas d'effet sur la grille.
+        L'inventaire est modifié par l'agent dans act().
+        On incrémente uniquement les compteurs globaux du modèle.
         """
-        if agent.robot_type == "green":
-            if agent.inventory["green"] >= 2:
-                agent.inventory["green"] -= 2
-                agent.inventory["yellow"] += 1
-                self.transformed_green_to_yellow += 1
+        if isinstance(agent, GreenAgent) and agent.n_green_wastes >= 2:
+            self.transformed_green_to_yellow += 1
+        elif isinstance(agent, YellowAgent) and agent.n_yellow_wastes >= 2:
+            self.transformed_yellow_to_red += 1
 
-        elif agent.robot_type == "yellow":
-            if agent.inventory["yellow"] >= 2:
-                agent.inventory["yellow"] -= 2
-                agent.inventory["red"] += 1
-                self.transformed_yellow_to_red += 1
-
-    # ACTION : DROP
-
-    def _do_drop(self, agent):
+    # DROP 
+    def _do_drop(self, agent, action=None):
         """
-        Cas principaux :
-        - Green robot : dépose un yellow sur sa case
-        - Yellow robot : dépose un red sur sa case
-        - Red robot : dépose le red dans la disposal zone
+        Dépose un déchet transformé sur la grille.
+
+        - GreenAgent  : dépose un déchet yellow sur sa case courante
+        - YellowAgent : dépose un déchet red sur sa case courante
+        - RedAgent    : si sur la disposal zone, le déchet est mis de côté
+                        (stored_red_waste++) sans créer d'objet sur la grille
         """
-        if agent.robot_type == "green":
-            if agent.inventory["yellow"] >= 1:
-                agent.inventory["yellow"] -= 1
+        if isinstance(agent, GreenAgent):
+            if agent.n_yellow_wastes >= 1:
                 waste = WasteAgent(
-                    unique_id=self.next_id(),
+                    unique_id=self._obj_id(),
                     model=self,
-                    waste_type="yellow"
+                    waste_type="yellow",
                 )
                 self.grid.place_agent(waste, agent.pos)
 
-        elif agent.robot_type == "yellow":
-            if agent.inventory["red"] >= 1:
-                agent.inventory["red"] -= 1
+        elif isinstance(agent, YellowAgent):
+            if agent.n_red_wastes >= 1:
                 waste = WasteAgent(
-                    unique_id=self.next_id(),
+                    unique_id=self._obj_id(),
                     model=self,
-                    waste_type="red"
+                    waste_type="red",
                 )
                 self.grid.place_agent(waste, agent.pos)
 
-        elif agent.robot_type == "red":
-            if agent.pos == self.disposal_pos and agent.inventory["red"] >= 1:
-                agent.inventory["red"] -= 1
+        elif isinstance(agent, RedAgent):
+            if agent.pos == self.disposal_pos and agent.n_red_wastes >= 1:
                 self.stored_red_waste += 1
+                # Pas de WasteAgent créé : le déchet est définitivement stocké
 
- 
-    # OUTILS
+
+    #  Statistiques                                                      
   
-    @staticmethod
-    def is_adjacent(p1, p2):
-        return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) == 1
 
     def count_green_waste(self):
         return self._count_waste_type("green")
@@ -415,9 +408,17 @@ class RobotMission(Model):
         return self._count_waste_type("red")
 
     def _count_waste_type(self, waste_type):
-        count = 0
-        for cell_content, x, y in self.grid.coord_iter():
-            for obj in cell_content:
-                if isinstance(obj, WasteAgent) and obj.waste_type == waste_type:
-                    count += 1
-        return count
+        return sum(
+            1
+            for contents, x, y in self.grid.coord_iter()
+            for obj in contents
+            if isinstance(obj, WasteAgent) and obj.waste_type == waste_type
+        )
+
+   
+    #  Outils statiques                                                    
+
+
+    @staticmethod
+    def _is_adjacent(p1, p2):
+        return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) == 1
