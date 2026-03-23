@@ -63,6 +63,17 @@ With 2 green robots, 2 yellow, 1 red, 12 initial green wastes we observe:
 - The red robot moves randomly and tends to stay near z3, making it very slow to reach z1/z2 where red waste accumulates creating a significant bottleneck in the disposal phase.
 - Without communication, robots occasionally duplicate effort: the main motivation for Step 2.
 
+## Known issues
+
+The following problems were identified during Step 1 and are to be addressed in Step 2:
+
+- **Drop position after transform**: when a robot transforms a waste, it drops the resulting waste on its current cell rather than moving east to the zone boundary first, which slows down pick-up by the next agent type.
+- **Cell sharing**: two robots can occupy the same cell simultaneously, which is physically unrealistic.
+- **Indefinite waste retention**: a robot that picks up a waste but never finds a second unit to pair with can hold it forever, creating a permanent deadlock.
+- **Red robot bottleneck**: the red robot spends a disproportionate amount of time navigating from where it picks up a red waste all the way to the disposal zone, making it the main throughput bottleneck.
+- **Inventory overflow**: a robot can carry more than 2 waste units at once (e.g. a green robot was observed holding 2 green wastes and 1 yellow waste simultaneously), violating the intended capacity constraint.
+- **Oscillating robots**: when two robots face each other on adjacent cells (e.g. one at (1, 2) and the other at (1, 3)), they can swap positions which is unrealistic.
+
 ## Roadmap
 
 | Step | Status | Description |
