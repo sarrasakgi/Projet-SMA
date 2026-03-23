@@ -31,12 +31,19 @@ class RobotAgent(Agent):
             },
         }
 
+    def _cell_free(self, pos):
+        """Return True if no other robot occupies pos."""
+        return not any(
+            isinstance(a, RobotAgent) and a is not self
+            for a in self.model.grid.get_cell_list_contents([pos])
+        )
+
     def move_random(self):
         """Prefer unvisited neighbors; fall back to any valid neighbor."""
         neighbors = self.model.grid.get_neighborhood(
             self.pos, moore=False, include_center=False
         )
-        valid = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
+        valid = [p for p in neighbors if self.x_min <= p[0] <= self.x_max and self._cell_free(p)]
         unvisited = [p for p in valid if p not in self.knowledge.get("visited", set())]
         target_pool = unvisited if unvisited else valid
         if target_pool:
@@ -53,7 +60,7 @@ class RobotAgent(Agent):
             candidates.append((x + dx, y))
         if dy != 0:
             candidates.append((x, y + dy))
-        valid = [p for p in candidates if self.x_min <= p[0] <= self.x_max]
+        valid = [p for p in candidates if self.x_min <= p[0] <= self.x_max and self._cell_free(p)]
         if valid:
             self.model.grid.move_agent(self, valid[0])
         else:
