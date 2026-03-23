@@ -1,2 +1,7 @@
-mesa
-matplotlib
+mesa==3.5.1
+matplotlib==3.10.8
+solara==1.57.3
+networkx==3.6.1
+altair==6.0.0
+pandas==3.0.1
+numpy==2.4.3
