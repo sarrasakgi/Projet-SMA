@@ -84,6 +84,11 @@ def plot_results(model):
 
 
 if __name__ == "__main__":
-    model = run_simulation()
-    plot_results(model)
+    import sys
+    if "--viz" in sys.argv:
+        import subprocess
+        subprocess.run([sys.executable, "-m", "solara", "run", "server.py", "--port", "8521"])
+    else:
+        model = run_simulation()
+        plot_results(model)
 

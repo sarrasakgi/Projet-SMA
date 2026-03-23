@@ -6,7 +6,7 @@
     # Ali Baklouti
 
 from mesa import Agent
-from objects import WasteAgent, WasteDisposalZone
+from objects import WasteAgent
 
 
 class RobotAgent(Agent):
@@ -121,7 +121,6 @@ class GreenAgent(RobotAgent):
         if action == "pick":
             waste = self.knowledge["green_wastes_here"][0]
             self.model.grid.remove_agent(waste)
-            self.model.schedule.remove(waste)
             self.n_green_wastes += 1
 
         elif action == "transform":
@@ -131,7 +130,6 @@ class GreenAgent(RobotAgent):
         elif action == "drop":
             waste = WasteAgent(self.model, waste_type="yellow")
             self.model.grid.place_agent(waste, self.pos)
-            self.model.schedule.add(waste)
             self.n_yellow_wastes = 0
 
         elif action == "move_toward_waste":
@@ -193,7 +191,6 @@ class YellowAgent(RobotAgent):
         if action == "pick":
             waste = self.knowledge["yellow_wastes_here"][0]
             self.model.grid.remove_agent(waste)
-            self.model.schedule.remove(waste)
             self.n_yellow_wastes += 1
 
         elif action == "transform":
@@ -203,7 +200,6 @@ class YellowAgent(RobotAgent):
         elif action == "drop":
             waste = WasteAgent(self.model, waste_type="red")
             self.model.grid.place_agent(waste, self.pos)
-            self.model.schedule.add(waste)
             self.n_red_wastes = 0
 
         elif action == "move_toward_waste":
@@ -263,11 +259,11 @@ class RedAgent(RobotAgent):
         if action == "pick":
             waste = self.knowledge["red_wastes_here"][0]
             self.model.grid.remove_agent(waste)
-            self.model.schedule.remove(waste)
             self.n_red_wastes += 1
 
         elif action == "drop":
-            self.n_red_wastes = 0  # waste is disposed of
+            self.n_red_wastes = 0
+            self.model.stored_red_waste += 1
 
         elif action == "move_to_disposal":
             self._move_toward(self.disposal_zone_pos)
