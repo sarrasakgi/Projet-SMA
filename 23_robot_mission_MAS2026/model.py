@@ -8,7 +8,6 @@
 import random
 from mesa import Model
 from mesa.space import MultiGrid
-from mesa.time import RandomActivation
 from mesa.datacollection import DataCollector
 
 from agents import GreenAgent, YellowAgent, RedAgent
@@ -44,12 +43,7 @@ class RobotMission(Model):
         self.width = width
         self.height = height
         self.grid = MultiGrid(width, height, torus=False)
-        self.schedule = RandomActivation(self)
         self.running = True
-
-        # Compteur d'identifiants pour les objets passifs (objects.py)
-        # Les agents Mesa 2+ (agents.py) gèrent leur propre identifiant.
-        self._next_obj_id = 0
 
         # Position de la zone de dépôt final (colonne la plus à l'est)
         self.disposal_pos = None
@@ -81,11 +75,6 @@ class RobotMission(Model):
  
     #  Utilitaires internes                                          
 
-
-    def _obj_id(self):
-        """Renvoie un identifiant unique pour les agents passifs (objects.py)."""
-        self._next_obj_id += 1
-        return self._next_obj_id
 
     def get_zone_from_x(self, x):
         """
@@ -134,11 +123,7 @@ class RobotMission(Model):
         for x in range(self.width):
             for y in range(self.height):
                 zone = self.get_zone_from_x(x)
-                obj = RadioactivityAgent(
-                    unique_id=self._obj_id(),
-                    model=self,
-                    zone=zone,
-                )
+                obj = RadioactivityAgent(model=self, zone=zone)
                 self.grid.place_agent(obj, (x, y))
 
     def _create_disposal_zone(self):
@@ -149,18 +134,14 @@ class RobotMission(Model):
         x = self.width - 1
         y = random.randrange(self.height)
         self.disposal_pos = (x, y)
-        obj = WasteDisposalZone(unique_id=self._obj_id(), model=self)
+        obj = WasteDisposalZone(model=self)
         self.grid.place_agent(obj, self.disposal_pos)
 
     def _create_initial_green_waste(self, n):
         """Place n déchets verts aléatoirement en zone z1."""
         for _ in range(n):
             pos = self.get_random_position(allowed_zones={"z1"})
-            waste = WasteAgent(
-                unique_id=self._obj_id(),
-                model=self,
-                waste_type="green",
-            )
+            waste = WasteAgent(model=self, waste_type="green")
             self.grid.place_agent(waste, pos)
 
     def _create_robots(self, n_green, n_yellow, n_red):
@@ -183,14 +164,12 @@ class RobotMission(Model):
             agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax)
             pos = self.get_random_position(allowed_zones={"z1"})
             self.grid.place_agent(agent, pos)
-            self.schedule.add(agent)
 
         # Yellow : accès à z1 et z2
         for _ in range(n_yellow):
             agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax)
             pos = self.get_random_position(allowed_zones={"z1", "z2"})
             self.grid.place_agent(agent, pos)
-            self.schedule.add(agent)
 
         # Red : accès à toute la grille (z1, z2, z3)
         for _ in range(n_red):
@@ -202,14 +181,13 @@ class RobotMission(Model):
             )
             pos = self.get_random_position(allowed_zones={"z1", "z2", "z3"})
             self.grid.place_agent(agent, pos)
-            self.schedule.add(agent)
 
 
     #  Boucle de simulation                                               
  
 
     def step(self):
-        self.schedule.step()
+        self.agents.shuffle_do("step")
         self.datacollector.collect(self)
 
  
@@ -373,20 +351,12 @@ class RobotMission(Model):
         """
         if isinstance(agent, GreenAgent):
             if agent.n_yellow_wastes >= 1:
-                waste = WasteAgent(
-                    unique_id=self._obj_id(),
-                    model=self,
-                    waste_type="yellow",
-                )
+                waste = WasteAgent(model=self, waste_type="yellow")
                 self.grid.place_agent(waste, agent.pos)
 
         elif isinstance(agent, YellowAgent):
             if agent.n_red_wastes >= 1:
-                waste = WasteAgent(
-                    unique_id=self._obj_id(),
-                    model=self,
-                    waste_type="red",
-                )
+                waste = WasteAgent(model=self, waste_type="red")
                 self.grid.place_agent(waste, agent.pos)
 
         elif isinstance(agent, RedAgent):
@@ -410,7 +380,7 @@ class RobotMission(Model):
     def _count_waste_type(self, waste_type):
         return sum(
             1
-            for contents, x, y in self.grid.coord_iter()
+            for contents, _ in self.grid.coord_iter()
             for obj in contents
             if isinstance(obj, WasteAgent) and obj.waste_type == waste_type
         )
