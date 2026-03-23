@@ -189,6 +189,18 @@ class RobotMission(Model):
     def step(self):
         self.agents.shuffle_do("step")
         self.datacollector.collect(self)
+        if (
+            self.count_green_waste() == 0
+            and self.count_yellow_waste() == 0
+            and self.count_red_waste() == 0
+            and all(
+                getattr(a, "n_green_wastes", 0) == 0
+                and getattr(a, "n_yellow_wastes", 0) == 0
+                and getattr(a, "n_red_wastes", 0) == 0
+                for a in self.agents
+            )
+        ):
+            self.running = False
 
  
     #  Percepts                                                           

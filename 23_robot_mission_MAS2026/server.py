@@ -24,7 +24,7 @@ from objects import RadioactivityAgent, WasteAgent, WasteDisposalZone
 
 ZONE_COLORS    = {"z1": "#c8f0c8", "z2": "#faf0b0", "z3": "#f5c8c8"}
 WASTE_COLORS   = {"green": "#00cc00", "yellow": "#e6b800", "red": "#dd0000"}
-ROBOT_COLORS   = {"green": "#005500", "yellow": "#996600", "red": "#880000"}
+ROBOT_COLORS   = {"green": "#00bb00", "yellow": "#ddaa00", "red": "#ee1111"}
 DISPOSAL_COLOR = "#333333"
 
 
@@ -205,12 +205,12 @@ def StorageChart(model):
 # ------------------------------------------------------------------ #
 
 model_params = {
-    "width":               12,
-    "height":              8,
-    "n_green_robots":      Slider("Green robots",        value=2,  min=1, max=6,  step=1),
-    "n_yellow_robots":     Slider("Yellow robots",       value=2,  min=1, max=6,  step=1),
-    "n_red_robots":        Slider("Red robots",          value=1,  min=1, max=4,  step=1),
-    "initial_green_waste": Slider("Initial green waste", value=12, min=2, max=30, step=2),
+    "width":               Slider("Grid width",          value=12, min=6,  max=24, step=3),
+    "height":              Slider("Grid height",         value=8,  min=4,  max=16, step=2),
+    "n_green_robots":      Slider("Green robots",        value=2,  min=1,  max=6,  step=1),
+    "n_yellow_robots":     Slider("Yellow robots",       value=2,  min=1,  max=6,  step=1),
+    "n_red_robots":        Slider("Red robots",          value=1,  min=1,  max=4,  step=1),
+    "initial_green_waste": Slider("Initial green waste", value=12, min=2,  max=30, step=2),
     "seed":                None,
 }
 
