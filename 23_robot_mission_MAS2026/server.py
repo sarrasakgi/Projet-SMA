@@ -120,7 +120,12 @@ def GridView(model):
                     ctype = "red"
             else:  # RedAgent
                 rcolor = ROBOT_COLORS["red"]
-                ctype  = "red" if getattr(robot, "n_red_wastes", 0) else None
+                if getattr(robot, "n_red_wastes", 0):
+                    ctype = "red"
+                elif getattr(robot, "n_cleanup_wastes", 0):
+                    ctype = getattr(robot, "cleanup_waste_type", None) or "green"
+                else:
+                    ctype = None
 
             # Outer empty circle
             ax.add_patch(mpatches.Circle(
@@ -205,20 +210,30 @@ def StorageChart(model):
 # ------------------------------------------------------------------ #
 
 model_params = {
-    "width":               Slider("Grid width",          value=12, min=6,  max=24, step=3),
-    "height":              Slider("Grid height",         value=8,  min=4,  max=16, step=2),
-    "n_green_robots":      Slider("Green robots",        value=2,  min=1,  max=6,  step=1),
-    "n_yellow_robots":     Slider("Yellow robots",       value=2,  min=1,  max=6,  step=1),
-    "n_red_robots":        Slider("Red robots",          value=1,  min=1,  max=4,  step=1),
-    "initial_green_waste": Slider("Initial green waste", value=12, min=2,  max=30, step=2),
-    "seed":                None,
+    "width":                Slider("Grid width",           value=12, min=6,  max=24, step=3),
+    "height":               Slider("Grid height",          value=8,  min=4,  max=16, step=2),
+    "n_green_robots":       Slider("Green robots",         value=2,  min=1,  max=6,  step=1),
+    "n_yellow_robots":      Slider("Yellow robots",        value=2,  min=1,  max=6,  step=1),
+    "n_red_robots":         Slider("Red robots",           value=1,  min=1,  max=4,  step=1),
+    "initial_green_waste":  Slider("Initial green waste",  value=12, min=0,  max=30, step=1),
+    "initial_yellow_waste": Slider("Initial yellow waste", value=0,  min=0,  max=20, step=1),
+    "initial_red_waste":    Slider("Initial red waste",    value=0,  min=0,  max=10, step=1),
+    "seed":                 None,
 }
 
 # ------------------------------------------------------------------ #
 #  App entry point                                                     #
 # ------------------------------------------------------------------ #
 
-initial_model = RobotMission()
+import random as _random
+initial_model = RobotMission(
+    n_green_robots=_random.randint(1, 6),
+    n_yellow_robots=_random.randint(1, 6),
+    n_red_robots=_random.randint(1, 4),
+    initial_green_waste=_random.randint(0, 30),
+    initial_yellow_waste=_random.randint(0, 20),
+    initial_red_waste=_random.randint(0, 10),
+)
 
 
 @solara.component

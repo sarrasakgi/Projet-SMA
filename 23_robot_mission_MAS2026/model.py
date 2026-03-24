@@ -33,6 +33,8 @@ class RobotMission(Model):
         n_yellow_robots=2,
         n_red_robots=1,
         initial_green_waste=12,
+        initial_yellow_waste=0,
+        initial_red_waste=0,
         seed=None,
     ):
         super().__init__()
@@ -67,6 +69,8 @@ class RobotMission(Model):
         self._create_radioactivity_map()
         self._create_disposal_zone()
         self._create_initial_green_waste(initial_green_waste)
+        self._create_initial_waste(initial_yellow_waste, "yellow", {"z2"})
+        self._create_initial_waste(initial_red_waste, "red", {"z3"})
         self._create_robots(n_green_robots, n_yellow_robots, n_red_robots)
 
         # Collecte initiale
@@ -144,6 +148,13 @@ class RobotMission(Model):
             waste = WasteAgent(model=self, waste_type="green")
             self.grid.place_agent(waste, pos)
 
+    def _create_initial_waste(self, n, waste_type, zones):
+        """Place n déchets d'un type donné dans les zones spécifiées."""
+        for _ in range(n):
+            pos = self.get_random_position(allowed_zones=zones)
+            waste = WasteAgent(model=self, waste_type=waste_type)
+            self.grid.place_agent(waste, pos)
+
     def _create_robots(self, n_green, n_yellow, n_red):
         """
         Instancie les robots avec les bornes de zone correctes
@@ -159,28 +170,23 @@ class RobotMission(Model):
         z2_xmin, z2_xmax = self._zone_x_bounds("z2")
         z3_xmin, z3_xmax = self._zone_x_bounds("z3")
 
-        # Green : limité à z1
+        # Green : spawn on leftmost column of z1
         for _ in range(n_green):
             agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax)
-            pos = self.get_random_position(allowed_zones={"z1"})
-            self.grid.place_agent(agent, pos)
+            y = random.randrange(self.height)
+            self.grid.place_agent(agent, (z1_xmin, y))
 
-        # Yellow : accès à z1 et z2
+        # Yellow : spawn on leftmost column of z2
         for _ in range(n_yellow):
             agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax)
-            pos = self.get_random_position(allowed_zones={"z1", "z2"})
-            self.grid.place_agent(agent, pos)
+            y = random.randrange(self.height)
+            self.grid.place_agent(agent, (z2_xmin, y))
 
-        # Red : accès à toute la grille (z1, z2, z3)
+        # Red : spawn on leftmost column of z3, no knowledge of disposal pos
         for _ in range(n_red):
-            agent = RedAgent(
-                self,
-                x_min=z1_xmin,
-                x_max=z3_xmax,
-                disposal_zone_pos=self.disposal_pos,
-            )
-            pos = self.get_random_position(allowed_zones={"z1", "z2", "z3"})
-            self.grid.place_agent(agent, pos)
+            agent = RedAgent(self, x_min=z1_xmin, x_max=z3_xmax)
+            y = random.randrange(self.height)
+            self.grid.place_agent(agent, (z3_xmin, y))
 
 
     #  Boucle de simulation                                               
@@ -197,6 +203,7 @@ class RobotMission(Model):
                 getattr(a, "n_green_wastes", 0) == 0
                 and getattr(a, "n_yellow_wastes", 0) == 0
                 and getattr(a, "n_red_wastes", 0) == 0
+                and getattr(a, "n_cleanup_wastes", 0) == 0
                 for a in self.agents
             )
         ):

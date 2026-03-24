@@ -24,7 +24,7 @@ class RobotAgent(Agent):
         self.x_min = x_min  # left boundary of allowed zone (inclusive)
         self.x_max = x_max  # right boundary of allowed zone (inclusive)
         self.drop_cooldown = {}   # pos -> steps until this cell is no longer ignored
-        self.knowledge = {"visited": set()}
+        self.knowledge = {"visited": set(), "known_empty": set()}
 
     def _tick_cooldowns(self):
         self.drop_cooldown = {
@@ -52,10 +52,10 @@ class RobotAgent(Agent):
         neighbors = self.model.grid.get_neighborhood(
             self.pos, moore=False, include_center=False
         )
-        valid = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
-        not_cooling = [p for p in valid if not self._is_on_cooldown(p)]
-        unvisited = [p for p in not_cooling if p not in self.knowledge.get("visited", set())]
-        target_pool = unvisited or not_cooling or valid
+        valid     = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
+        not_cool  = [p for p in valid if not self._is_on_cooldown(p)]
+        unvisited = [p for p in not_cool if p not in self.knowledge["visited"]]
+        target_pool = unvisited or not_cool or valid
         if target_pool:
             self.model.grid.move_agent(self, self.random.choice(target_pool))
 
@@ -98,6 +98,7 @@ class GreenAgent(RobotAgent):
         self.steps_holding_green = 0
         self.knowledge = {
             "visited": set(),
+            "known_empty": set(),
             "position": None,
             "green_wastes_here": [],
             "green_waste_neighbor_pos": None,
@@ -106,6 +107,18 @@ class GreenAgent(RobotAgent):
     @property
     def _patience(self):
         return self.model.width * 2  # 50% drop prob reached after 2*width steps
+
+    def move_random(self):
+        """Prefer unknown cells, then known-empty, then cooldown. Never blocks."""
+        neighbors = self.model.grid.get_neighborhood(
+            self.pos, moore=False, include_center=False
+        )
+        valid     = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
+        not_cool  = [p for p in valid if not self._is_on_cooldown(p)]
+        unknown   = [p for p in not_cool if p not in self.knowledge["visited"]]
+        target_pool = unknown or not_cool or valid
+        if target_pool:
+            self.model.grid.move_agent(self, self.random.choice(target_pool))
 
     # ------------------------------------------------------------------ #
     #  Perception → Belief update                                          #
@@ -129,19 +142,45 @@ class GreenAgent(RobotAgent):
                      for a in contents)),
             None,
         )
+        # Memory: update known_empty based on what we see
+        if self.knowledge["green_wastes_here"]:
+            self.knowledge["known_empty"].discard(self.pos)
+        else:
+            self.knowledge["known_empty"].add(self.pos)
+        for pos, contents in percepts["neighbors"].items():
+            has_waste = any(
+                isinstance(a, WasteAgent) and getattr(a, "waste_type", None) == "green"
+                for a in contents
+            )
+            if has_waste:
+                self.knowledge["known_empty"].discard(pos)
+            else:
+                self.knowledge["known_empty"].add(pos)
 
     # ------------------------------------------------------------------ #
     #  Deliberation → choose action                                        #
     # ------------------------------------------------------------------ #
 
+    def _in_cleanup_mode(self):
+        green_on_grid = self.model.count_green_waste()
+        yellow_on_grid = self.model.count_yellow_waste()
+        green_held = sum(getattr(a, "n_green_wastes", 0) for a in self.model.agents if isinstance(a, GreenAgent))
+        yellow_held = sum(getattr(a, "n_yellow_wastes", 0) for a in self.model.agents if isinstance(a, YellowAgent))
+        return (green_on_grid + green_held) <= 1 and (yellow_on_grid + yellow_held) <= 1
+
     def deliberate(self):
         """Return the highest-priority action given current knowledge."""
+        # Stop during cleanup mode — red robots handle the rest
+        if self._in_cleanup_mode() and self.model.count_red_waste() == 0:
+            return "wait"
         # 1. Hands full → transform immediately
         if self.n_green_wastes == 2:
             return "transform"
-        # 2. Carrying a yellow waste → drop it for YellowAgents to collect
+        # 2. Carrying a yellow waste → move to rightmost col of z1 then drop
         if self.n_yellow_wastes == 1:
-            return "drop"
+            if self.pos[0] == self.x_max:
+                return "drop"
+            return "move_east"
         # 3. Holding 1 green too long → probabilistic early drop
         if ENABLE_DROP_PATIENCE and self.n_green_wastes == 1:
             drop_prob = 1 - 1 / (1 + self.steps_holding_green / self._patience)
@@ -196,6 +235,9 @@ class GreenAgent(RobotAgent):
         elif action == "move":
             self.move_random()
 
+        elif action == "wait":
+            pass
+
         if self.n_green_wastes == 1:
             self.steps_holding_green += 1
 
@@ -220,6 +262,7 @@ class YellowAgent(RobotAgent):
         self.steps_holding_yellow = 0
         self.knowledge = {
             "visited": set(),
+            "known_empty": set(),
             "position": None,
             "yellow_wastes_here": [],
             "yellow_waste_neighbor_pos": None,
@@ -245,12 +288,39 @@ class YellowAgent(RobotAgent):
                      for a in contents)),
             None,
         )
+        # Memory: update known_empty based on what we see
+        if self.knowledge["yellow_wastes_here"]:
+            self.knowledge["known_empty"].discard(self.pos)
+        else:
+            self.knowledge["known_empty"].add(self.pos)
+        for pos, contents in percepts["neighbors"].items():
+            has_waste = any(
+                isinstance(a, WasteAgent) and getattr(a, "waste_type", None) == "yellow"
+                for a in contents
+            )
+            if has_waste:
+                self.knowledge["known_empty"].discard(pos)
+            else:
+                self.knowledge["known_empty"].add(pos)
+
+    def _in_cleanup_mode(self):
+        green_on_grid = self.model.count_green_waste()
+        yellow_on_grid = self.model.count_yellow_waste()
+        green_held = sum(getattr(a, "n_green_wastes", 0) for a in self.model.agents if isinstance(a, GreenAgent))
+        yellow_held = sum(getattr(a, "n_yellow_wastes", 0) for a in self.model.agents if isinstance(a, YellowAgent))
+        return (green_on_grid + green_held) <= 1 and (yellow_on_grid + yellow_held) <= 1
 
     def deliberate(self):
+        # Stop during cleanup mode
+        if self._in_cleanup_mode() and self.model.count_red_waste() == 0:
+            return "wait"
         if self.n_yellow_wastes == 2:
             return "transform"
+        # Carrying red → move to rightmost col of z2 then drop
         if self.n_red_wastes == 1:
-            return "drop"
+            if self.pos[0] == self.x_max:
+                return "drop"
+            return "move_east"
         if ENABLE_DROP_PATIENCE and self.n_yellow_wastes == 1:
             drop_prob = 1 - 1 / (1 + self.steps_holding_yellow / self._patience)
             if _random.random() < drop_prob:
@@ -297,6 +367,9 @@ class YellowAgent(RobotAgent):
         elif action == "move":
             self.move_random()
 
+        elif action == "wait":
+            pass
+
         if self.n_yellow_wastes == 1:
             self.steps_holding_yellow += 1
 
@@ -310,15 +383,22 @@ class YellowAgent(RobotAgent):
 
 class RedAgent(RobotAgent):
 
-    def __init__(self, model, x_min, x_max, disposal_zone_pos):
+    def __init__(self, model, x_min, x_max):
         super().__init__(model, x_min, x_max)
         self.n_red_wastes = 0
-        self.disposal_zone_pos = disposal_zone_pos  # passed by the model at creation
+        self.n_cleanup_wastes = 0       # leftover green/yellow carried in cleanup mode
+        self.cleanup_waste_type = None  # type of waste currently carried in cleanup
+        self._sweep_col = 0             # current sweep column
+        self._sweep_row = None          # current sweep row (None = start at top)
         self.knowledge = {
             "visited": set(),
+            "known_empty": set(),
             "position": None,
             "red_wastes_here": [],
             "red_waste_neighbor_pos": None,
+            "any_waste_here": [],       # any waste type, for cleanup mode
+            "any_waste_neighbor_pos": None,
+            "disposal_zone_pos": None,  # unknown until discovered
             "at_disposal_zone": False,
         }
 
@@ -335,17 +415,105 @@ class RedAgent(RobotAgent):
                     for a in contents)),
             None,
         )
-        self.knowledge["at_disposal_zone"] = (self.pos == self.disposal_zone_pos)
+        # Discover disposal zone by seeing a WasteDisposalZone object
+        from objects import WasteDisposalZone
+        for obj in percepts["current"]:
+            if isinstance(obj, WasteDisposalZone):
+                self.knowledge["disposal_zone_pos"] = self.pos
+        for pos, contents in percepts["neighbors"].items():
+            for obj in contents:
+                if isinstance(obj, WasteDisposalZone):
+                    self.knowledge["disposal_zone_pos"] = pos
+        self.knowledge["at_disposal_zone"] = (
+            self.pos == self.knowledge["disposal_zone_pos"]
+        )
+        # Cleanup: see any waste regardless of type
+        self.knowledge["any_waste_here"] = [
+            a for a in percepts["current"] if isinstance(a, WasteAgent)
+        ]
+        self.knowledge["any_waste_neighbor_pos"] = next(
+            (pos for pos, contents in percepts["neighbors"].items()
+             if any(isinstance(a, WasteAgent) for a in contents)),
+            None,
+        )
+
+    def _advance_sweep(self):
+        """Zigzag sweep: even columns top→bottom, odd columns bottom→top."""
+        H = self.model.height
+        W = self.model.width
+        if self._sweep_row is None:
+            self._sweep_row = H - 1 if self._sweep_col % 2 == 0 else 0
+            return
+        if self._sweep_col % 2 == 0:
+            self._sweep_row -= 1
+            if self._sweep_row < 0:
+                self._sweep_col += 1
+                self._sweep_row = 0 if self._sweep_col % 2 == 0 else H - 1
+        else:
+            self._sweep_row += 1
+            if self._sweep_row >= H:
+                self._sweep_col += 1
+                self._sweep_row = H - 1 if self._sweep_col % 2 == 0 else 0
+        if self._sweep_col >= W:
+            self._sweep_col = 0
+            self._sweep_row = H - 1
+
+    def _sweep_target(self):
+        if self._sweep_row is None:
+            self._sweep_row = self.model.height - 1 if self._sweep_col % 2 == 0 else 0
+        return (self._sweep_col, self._sweep_row)
+
+    def _cleanup_mode(self):
+        """True when leftover waste can never be transformed further:
+        - at most 1 green waste on grid AND no green robot holding green
+        - at most 1 yellow waste on grid AND no yellow robot holding yellow
+        """
+        green_on_grid = self.model.count_green_waste()
+        yellow_on_grid = self.model.count_yellow_waste()
+
+        green_held = sum(
+            getattr(a, "n_green_wastes", 0) for a in self.model.agents
+            if isinstance(a, GreenAgent)
+        )
+        yellow_held = sum(
+            getattr(a, "n_yellow_wastes", 0) for a in self.model.agents
+            if isinstance(a, YellowAgent)
+        )
+
+        green_stuck = green_on_grid + green_held <= 1
+        yellow_stuck = yellow_on_grid + yellow_held <= 1
+
+        return green_stuck and yellow_stuck
 
     def deliberate(self):
+        # Normal pipeline: carry red to disposal
         if self.n_red_wastes == 1:
             if self.knowledge["at_disposal_zone"]:
                 return "drop"
-            return "move_to_disposal"
+            if self.knowledge["disposal_zone_pos"]:
+                return "move_to_disposal"
+            return "move_east"
         if self.knowledge["red_wastes_here"] and self.n_red_wastes == 0:
             return "pick"
         if self.knowledge["red_waste_neighbor_pos"] and self.n_red_wastes == 0:
             return "move_toward_waste"
+
+        # Cleanup mode: only enter when red pipeline is also done
+        if self._cleanup_mode() and self.model.count_red_waste() == 0 and self.n_red_wastes == 0:
+            if self.n_cleanup_wastes > 0:
+                if self.knowledge["at_disposal_zone"]:
+                    return "cleanup_drop"
+                if self.knowledge["disposal_zone_pos"]:
+                    return "move_to_disposal"
+                return "move_east"
+            if self.knowledge["any_waste_here"]:
+                return "cleanup_pick"
+            # Sweep: move toward current sweep target
+            target = self._sweep_target()
+            if self.pos == target:
+                return "sweep_advance"
+            return "sweep_move"
+
         return "move"
 
     def act(self, action):
@@ -359,10 +527,30 @@ class RedAgent(RobotAgent):
             self.model.stored_red_waste += 1
 
         elif action == "move_to_disposal":
-            self._move_toward(self.disposal_zone_pos)
+            self._move_toward(self.knowledge["disposal_zone_pos"])
 
         elif action == "move_toward_waste":
             self._move_toward(self.knowledge["red_waste_neighbor_pos"])
+
+        elif action == "cleanup_pick":
+            waste = self.knowledge["any_waste_here"][0]
+            self.cleanup_waste_type = waste.waste_type
+            self.model.grid.remove_agent(waste)
+            self.n_cleanup_wastes += 1
+
+        elif action == "cleanup_drop":
+            self.n_cleanup_wastes = 0
+            self.cleanup_waste_type = None
+            self.model.stored_red_waste += 1
+
+        elif action == "sweep_advance":
+            self._advance_sweep()
+
+        elif action == "sweep_move":
+            self._move_toward(self._sweep_target())
+
+        elif action == "move_east":
+            self.move_east_biased()
 
         elif action == "move":
             self.move_random()

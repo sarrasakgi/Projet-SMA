@@ -5,6 +5,7 @@
     # Sarra Sakgi
     # Ali Baklouti
 
+import random
 import matplotlib.pyplot as plt
 import agents as _agents_module
 from datetime import datetime
@@ -14,15 +15,20 @@ from model import RobotMission
 #  Parameters                                                          #
 # ------------------------------------------------------------------ #
 
-PARAMS = dict(
-    width=12,
-    height=8,
-    n_green_robots=2,
-    n_yellow_robots=2,
-    n_red_robots=1,
-    initial_green_waste=12,
-    seed=42,
-)
+def make_params():
+    return dict(
+        width=12,
+        height=8,
+        n_green_robots=random.randint(1, 6),
+        n_yellow_robots=random.randint(1, 6),
+        n_red_robots=random.randint(1, 4),
+        initial_green_waste=random.randint(2, 30),
+        initial_yellow_waste=random.randint(0, 20),
+        initial_red_waste=random.randint(0, 10),
+        seed=None,
+    )
+
+PARAMS = make_params()
 
 MAX_STEPS = 500
 
@@ -101,7 +107,9 @@ SCENARIOS = [
 ]
 
 
-def run_all_scenarios(params=PARAMS, max_steps=MAX_STEPS):
+def run_all_scenarios(params=None, max_steps=MAX_STEPS):
+    if params is None:
+        params = make_params()
     results = []
     for scenario in SCENARIOS:
         # Set feature flags
