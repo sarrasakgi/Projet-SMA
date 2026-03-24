@@ -19,10 +19,12 @@ ENABLE_EAST_BIAS     = True   # robots drift east when carrying waste
 class RobotAgent(Agent):
     """Base class shared by all robot types."""
 
-    def __init__(self, model, x_min, x_max):
+    def __init__(self, model, x_min, x_max, home_x_min=None, home_x_max=None):
         super().__init__(model)
         self.x_min = x_min  # left boundary of allowed zone (inclusive)
         self.x_max = x_max  # right boundary of allowed zone (inclusive)
+        self.home_x_min = home_x_min if home_x_min is not None else x_min
+        self.home_x_max = home_x_max if home_x_max is not None else x_max
         self.drop_cooldown = {}   # pos -> steps until this cell is no longer ignored
         self.knowledge = {"visited": set(), "known_empty": set()}
 
@@ -48,14 +50,16 @@ class RobotAgent(Agent):
         }
 
     def move_random(self):
-        """Prefer unvisited, non-cooldown neighbors; fall back progressively."""
+        """Prefer unvisited home-zone neighbors, fall back progressively."""
         neighbors = self.model.grid.get_neighborhood(
             self.pos, moore=False, include_center=False
         )
-        valid     = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
-        not_cool  = [p for p in valid if not self._is_on_cooldown(p)]
-        unvisited = [p for p in not_cool if p not in self.knowledge["visited"]]
-        target_pool = unvisited or not_cool or valid
+        valid      = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
+        not_cool   = [p for p in valid if not self._is_on_cooldown(p)]
+        in_home    = [p for p in not_cool if self.home_x_min <= p[0] <= self.home_x_max]
+        unvisited_home = [p for p in in_home if p not in self.knowledge["visited"]]
+        unvisited_any  = [p for p in not_cool if p not in self.knowledge["visited"]]
+        target_pool = unvisited_home or in_home or unvisited_any or not_cool or valid
         if target_pool:
             self.model.grid.move_agent(self, self.random.choice(target_pool))
 
@@ -91,8 +95,8 @@ class RobotAgent(Agent):
 
 class GreenAgent(RobotAgent):
 
-    def __init__(self, model, x_min, x_max):
-        super().__init__(model, x_min, x_max)
+    def __init__(self, model, x_min, x_max, home_x_min=None, home_x_max=None):
+        super().__init__(model, x_min, x_max, home_x_min, home_x_max)
         self.n_green_wastes = 0
         self.n_yellow_wastes = 0
         self.steps_holding_green = 0
@@ -107,18 +111,6 @@ class GreenAgent(RobotAgent):
     @property
     def _patience(self):
         return self.model.width * 2  # 50% drop prob reached after 2*width steps
-
-    def move_random(self):
-        """Prefer unknown cells, then known-empty, then cooldown. Never blocks."""
-        neighbors = self.model.grid.get_neighborhood(
-            self.pos, moore=False, include_center=False
-        )
-        valid     = [p for p in neighbors if self.x_min <= p[0] <= self.x_max]
-        not_cool  = [p for p in valid if not self._is_on_cooldown(p)]
-        unknown   = [p for p in not_cool if p not in self.knowledge["visited"]]
-        target_pool = unknown or not_cool or valid
-        if target_pool:
-            self.model.grid.move_agent(self, self.random.choice(target_pool))
 
     # ------------------------------------------------------------------ #
     #  Perception → Belief update                                          #
@@ -170,8 +162,12 @@ class GreenAgent(RobotAgent):
 
     def deliberate(self):
         """Return the highest-priority action given current knowledge."""
-        # Stop during cleanup mode — red robots handle the rest
+        # Stop during cleanup mode — but drop any held waste first
         if self._in_cleanup_mode() and self.model.count_red_waste() == 0:
+            if self.n_yellow_wastes == 1:
+                return "drop"
+            if self.n_green_wastes > 0:
+                return "drop_green"
             return "wait"
         # 1. Hands full → transform immediately
         if self.n_green_wastes == 2:
@@ -255,8 +251,8 @@ class GreenAgent(RobotAgent):
 
 class YellowAgent(RobotAgent):
 
-    def __init__(self, model, x_min, x_max):
-        super().__init__(model, x_min, x_max)
+    def __init__(self, model, x_min, x_max, home_x_min=None, home_x_max=None):
+        super().__init__(model, x_min, x_max, home_x_min, home_x_max)
         self.n_yellow_wastes = 0
         self.n_red_wastes = 0
         self.steps_holding_yellow = 0
@@ -311,8 +307,12 @@ class YellowAgent(RobotAgent):
         return (green_on_grid + green_held) <= 1 and (yellow_on_grid + yellow_held) <= 1
 
     def deliberate(self):
-        # Stop during cleanup mode
+        # Stop during cleanup mode — but drop any held waste first
         if self._in_cleanup_mode() and self.model.count_red_waste() == 0:
+            if self.n_red_wastes == 1:
+                return "drop"
+            if self.n_yellow_wastes > 0:
+                return "drop_yellow"
             return "wait"
         if self.n_yellow_wastes == 2:
             return "transform"
@@ -383,8 +383,8 @@ class YellowAgent(RobotAgent):
 
 class RedAgent(RobotAgent):
 
-    def __init__(self, model, x_min, x_max):
-        super().__init__(model, x_min, x_max)
+    def __init__(self, model, x_min, x_max, home_x_min=None, home_x_max=None):
+        super().__init__(model, x_min, x_max, home_x_min, home_x_max)
         self.n_red_wastes = 0
         self.n_cleanup_wastes = 0       # leftover green/yellow carried in cleanup mode
         self.cleanup_waste_type = None  # type of waste currently carried in cleanup

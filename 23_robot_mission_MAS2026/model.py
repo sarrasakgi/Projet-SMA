@@ -170,21 +170,24 @@ class RobotMission(Model):
         z2_xmin, z2_xmax = self._zone_x_bounds("z2")
         z3_xmin, z3_xmax = self._zone_x_bounds("z3")
 
-        # Green : spawn on leftmost column of z1
+        # Green : home = z1, spawn on leftmost column of z1
         for _ in range(n_green):
-            agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax)
+            agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax,
+                               home_x_min=z1_xmin, home_x_max=z1_xmax)
             y = random.randrange(self.height)
             self.grid.place_agent(agent, (z1_xmin, y))
 
-        # Yellow : spawn on leftmost column of z2
+        # Yellow : home = handoff col of z1 + z2, spawn on leftmost column of z2
         for _ in range(n_yellow):
-            agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax)
+            agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax,
+                                home_x_min=z1_xmax, home_x_max=z2_xmax)
             y = random.randrange(self.height)
             self.grid.place_agent(agent, (z2_xmin, y))
 
-        # Red : spawn on leftmost column of z3, no knowledge of disposal pos
+        # Red : home = handoff col of z2 + z3, spawn on leftmost column of z3
         for _ in range(n_red):
-            agent = RedAgent(self, x_min=z1_xmin, x_max=z3_xmax)
+            agent = RedAgent(self, x_min=z1_xmin, x_max=z3_xmax,
+                             home_x_min=z2_xmax, home_x_max=z3_xmax)
             y = random.randrange(self.height)
             self.grid.place_agent(agent, (z3_xmin, y))
 
