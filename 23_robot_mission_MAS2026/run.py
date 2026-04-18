@@ -57,8 +57,8 @@ def run_simulation(params=PARAMS, max_steps=MAX_STEPS, verbose=True):
         print(f"  Yellow waste remaining: {model.count_yellow_waste()}")
         print(f"  Red waste remaining   : {model.count_red_waste()}")
         print(f"  Stored red waste      : {model.stored_red_waste}")
-        print(f"  Green→Yellow transforms: {model.transformed_green_to_yellow}")
-        print(f"  Yellow→Red transforms  : {model.transformed_yellow_to_red}")
+        print(f"  Green->Yellow transforms: {model.transformed_green_to_yellow}")
+        print(f"  Yellow->Red transforms  : {model.transformed_yellow_to_red}")
 
     return model
 

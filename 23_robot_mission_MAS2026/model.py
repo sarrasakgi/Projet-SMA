@@ -59,6 +59,7 @@ class RobotMission(Model):
         self._next_broadcast_id = 1
         self.active_broadcasts = []
         self.event_log = []
+        self.emergency_cleanup = False
 
         # DataCollector
         self.datacollector = DataCollector(
@@ -196,8 +197,14 @@ class RobotMission(Model):
 
     def step(self):
         self.step_count += 1
+        self._activate_emergency_cleanup_if_needed()
+        if self.emergency_cleanup:
+            self._publish_emergency_cleanup_targets()
         self._assign_open_broadcasts()
         self.agents.shuffle_do("step")
+        self._activate_emergency_cleanup_if_needed()
+        if self.emergency_cleanup:
+            self._publish_emergency_cleanup_targets()
         self._assign_open_broadcasts()
         self._decay_broadcasts()
         self.datacollector.collect(self)
@@ -272,6 +279,8 @@ class RobotMission(Model):
     #  Communication / broadcast                                           
 
     def _robot_type(self, agent):
+        if agent is None:
+            return "system"
         if isinstance(agent, GreenAgent):
             return "green"
         if isinstance(agent, YellowAgent):
@@ -281,6 +290,8 @@ class RobotMission(Model):
         return "unknown"
 
     def _robot_label(self, agent):
+        if agent is None:
+            return "system"
         return f"{self._robot_type(agent)}#{getattr(agent, 'unique_id', '?')}"
 
     def _robot_is_free(self, agent):
@@ -297,6 +308,44 @@ class RobotMission(Model):
             for obj in self.grid.get_cell_list_contents([pos])
         )
 
+    def _cell_radioactivity(self, pos):
+        for obj in self.grid.get_cell_list_contents([pos]):
+            if isinstance(obj, RadioactivityAgent):
+                return getattr(obj, "radioactivity", 0.0)
+        return 0.0
+
+    def _count_carried_waste(self, attr_name):
+        return sum(getattr(agent, attr_name, 0) for agent in self.agents)
+
+    def _activate_emergency_cleanup_if_needed(self):
+        if self.emergency_cleanup:
+            return
+
+        green_units = self.count_green_waste() + self._count_carried_waste("n_green_wastes")
+        yellow_units = self.count_yellow_waste() + self._count_carried_waste("n_yellow_wastes")
+        red_units = self.count_red_waste() + self._count_carried_waste("n_red_wastes")
+
+        if green_units + yellow_units + red_units == 0:
+            return
+
+        if green_units < 2 and yellow_units < 2:
+            self.emergency_cleanup = True
+            for agent in self.agents:
+                if not isinstance(agent, RedAgent):
+                    self.release_task(agent)
+            self.log_event("Emergency cleanup activated: red robots dispose remaining waste")
+
+    def _publish_emergency_cleanup_targets(self):
+        seen = set()
+        for contents, pos in self.grid.coord_iter():
+            for obj in contents:
+                if isinstance(obj, WasteAgent):
+                    key = (pos, obj.waste_type)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    self.emit_broadcast(None, pos, obj.waste_type, {"red"})
+
     def log_event(self, message):
         self.event_log.append(f"S{self.step_count}: {message}")
         self.event_log = self.event_log[-12:]
@@ -306,24 +355,27 @@ class RobotMission(Model):
         if not self._waste_exists(pos, waste_type):
             return
 
+        sender_pos = sender.pos if sender is not None else pos
         target_types = tuple(sorted(target_types))
+        priority = self._cell_radioactivity(pos)
         for msg in self.active_broadcasts:
             if msg["pos"] == pos and msg["waste_type"] == waste_type:
                 msg["ttl"] = self.broadcast_ttl
-                msg["sender_pos"] = sender.pos
+                msg["sender_pos"] = sender_pos
                 msg["sender_type"] = self._robot_type(sender)
                 msg["target_types"] = target_types
-                self._assign_open_broadcasts()
+                msg["priority"] = priority
                 return
 
         msg = {
             "id": self._next_broadcast_id,
             "pos": pos,
             "waste_type": waste_type,
-            "sender_pos": sender.pos,
+            "sender_pos": sender_pos,
             "sender_type": self._robot_type(sender),
             "target_types": target_types,
             "ttl": self.broadcast_ttl,
+            "priority": priority,
             "claimed_by": None,
             "claimed_by_type": None,
         }
@@ -332,7 +384,6 @@ class RobotMission(Model):
         self.log_event(
             f"{self._robot_label(sender)} broadcasts {waste_type} waste at {pos}"
         )
-        self._assign_open_broadcasts()
 
     def release_task(self, agent):
         task = getattr(agent, "current_task", None)
@@ -345,7 +396,7 @@ class RobotMission(Model):
         agent.current_task = None
 
     def _assign_open_broadcasts(self):
-        for msg in self.active_broadcasts:
+        for msg in sorted(self.active_broadcasts, key=lambda m: (-m.get("priority", 0.0), m["id"])):
             if msg.get("claimed_by") is not None:
                 continue
 

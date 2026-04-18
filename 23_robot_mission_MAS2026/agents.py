@@ -25,6 +25,7 @@ class RobotAgent(Agent):
         self.x_max = x_max  # right boundary of allowed zone (inclusive)
         self.drop_cooldown = {}   # pos -> steps until this cell is no longer ignored
         self.current_task = None
+        self.carried_waste_type = None
         self.knowledge = {"visited": set()}
 
     def _tick_cooldowns(self):
@@ -130,19 +131,25 @@ class RobotAgent(Agent):
             self.model.grid.move_agent(self, self.random.choice(same_x))
 
     def _move_toward(self, target):
-        """One step of greedy Manhattan navigation toward target, within zone."""
-        x, y = self.pos
+        """One step of navigation toward target, with obstacle avoidance within zone."""
         tx, ty = target
-        dx = (tx > x) - (tx < x)
-        dy = (ty > y) - (ty < y)
-        candidates = []
-        if dx != 0:
-            candidates.append((x + dx, y))
-        if dy != 0:
-            candidates.append((x, y + dy))
-        valid = [p for p in candidates if self.x_min <= p[0] <= self.x_max and self._cell_free(p)]
+        neighbors = self.model.grid.get_neighborhood(
+            self.pos, moore=False, include_center=False
+        )
+        valid = [
+            p for p in neighbors
+            if self.x_min <= p[0] <= self.x_max and self._cell_free(p)
+        ]
         if valid:
-            self.model.grid.move_agent(self, valid[0])
+            best = min(
+                valid,
+                key=lambda p: (
+                    abs(p[0] - tx) + abs(p[1] - ty),
+                    -p[0],
+                    abs(p[1] - ty),
+                ),
+            )
+            self.model.grid.move_agent(self, best)
         else:
             self.move_random()
 
@@ -179,6 +186,9 @@ class GreenAgent(RobotAgent):
         ]
         self.knowledge["visible_red_positions"] = self._visible_positions(percepts, "red")
 
+        if self.model.emergency_cleanup:
+            return
+
         if self.knowledge["visible_green_positions"] and not (self.n_green_wastes < 2 and self.n_yellow_wastes == 0):
             for pos in self.knowledge["visible_green_positions"]:
                 self.model.emit_broadcast(self, pos, "green", {"green"})
@@ -195,6 +205,12 @@ class GreenAgent(RobotAgent):
             self.model.emit_broadcast(self, pos, "red", {"yellow", "red"})
 
     def deliberate(self):
+        if self.model.emergency_cleanup:
+            if self.n_yellow_wastes == 1:
+                return "drop"
+            if self.n_green_wastes > 0:
+                return "drop_green"
+            return "move"
         if self.n_green_wastes == 2:
             return "transform"
         if self.n_yellow_wastes == 1:
@@ -246,6 +262,7 @@ class GreenAgent(RobotAgent):
             self.n_green_wastes = 0
             self.n_yellow_wastes = 1
             self.steps_holding_green = 0
+            self.model.transformed_green_to_yellow += 1
 
         elif action == "drop_green":
             waste = WasteAgent(self.model, waste_type="green")
@@ -317,6 +334,9 @@ class YellowAgent(RobotAgent):
             pos for pos in self.knowledge["visible_red_positions"] if pos[0] < self.x_max
         ]
 
+        if self.model.emergency_cleanup:
+            return
+
         for pos in self.knowledge["visible_green_positions"]:
             self.model.emit_broadcast(self, pos, "green", {"green"})
 
@@ -333,6 +353,12 @@ class YellowAgent(RobotAgent):
                 self.model.emit_broadcast(self, pos, "red", {"red"})
 
     def deliberate(self):
+        if self.model.emergency_cleanup:
+            if self.n_red_wastes == 1:
+                return "drop"
+            if self.n_yellow_wastes > 0:
+                return "drop_yellow"
+            return "move"
         if self.n_yellow_wastes == 2:
             return "transform"
         if self.n_red_wastes == 1:
@@ -384,6 +410,7 @@ class YellowAgent(RobotAgent):
             self.n_yellow_wastes = 0
             self.n_red_wastes = 1
             self.steps_holding_yellow = 0
+            self.model.transformed_yellow_to_red += 1
 
         elif action == "drop_yellow":
             waste = WasteAgent(self.model, waste_type="yellow")
@@ -428,6 +455,7 @@ class RedAgent(RobotAgent):
     def __init__(self, model, x_min, x_max, disposal_zone_pos):
         super().__init__(model, x_min, x_max)
         self.n_red_wastes = 0
+        self.carried_waste_type = None
         self.disposal_zone_pos = disposal_zone_pos
         self.knowledge = {
             "visited": set(),
@@ -448,6 +476,9 @@ class RedAgent(RobotAgent):
         self.knowledge["visible_red_positions"] = self._visible_positions(percepts, "red")
         self.knowledge["at_disposal_zone"] = (self.pos == self.disposal_zone_pos)
 
+        if self.model.emergency_cleanup:
+            return
+
         for pos in self.knowledge["visible_green_positions"]:
             self.model.emit_broadcast(self, pos, "green", {"green"})
 
@@ -459,6 +490,19 @@ class RedAgent(RobotAgent):
                 self.model.emit_broadcast(self, pos, "red", {"red"})
 
     def deliberate(self):
+        if self.model.emergency_cleanup:
+            if self.n_red_wastes == 1:
+                return "drop" if self.knowledge["at_disposal_zone"] else "move_to_disposal"
+            if self.current_task and self.carried_load() == 0:
+                return "pick_target" if self.current_task["target_pos"] == self.pos else "move_to_task"
+            visible_any = (
+                self.knowledge["visible_red_positions"]
+                + self.knowledge["visible_yellow_positions"]
+                + self.knowledge["visible_green_positions"]
+            )
+            if visible_any:
+                return "pick_any" if self.pos in visible_any else "move_to_any_waste"
+            return "move"
         if self.n_red_wastes == 1:
             if self.knowledge["at_disposal_zone"]:
                 return "drop"
@@ -481,10 +525,35 @@ class RedAgent(RobotAgent):
             if waste is not None:
                 self.model.grid.remove_agent(waste)
                 self.n_red_wastes = 1
+                self.carried_waste_type = "red"
+                self.model.release_task(self)
+
+        elif action in {"pick_target", "pick_any"}:
+            desired = self.current_task["waste_type"] if action == "pick_target" and self.current_task else None
+            order = [desired] if desired else []
+            for waste_type in ["red", "yellow", "green"]:
+                if waste_type not in order:
+                    order.append(waste_type)
+
+            waste = None
+            for waste_type in order:
+                waste = next(
+                    (a for a in self.model.grid.get_cell_list_contents([self.pos])
+                     if isinstance(a, WasteAgent) and getattr(a, "waste_type", None) == waste_type),
+                    None,
+                )
+                if waste is not None:
+                    self.carried_waste_type = waste_type
+                    break
+
+            if waste is not None:
+                self.model.grid.remove_agent(waste)
+                self.n_red_wastes = 1
                 self.model.release_task(self)
 
         elif action == "drop":
             self.n_red_wastes = 0
+            self.carried_waste_type = None
             self.model.stored_red_waste += 1
 
         elif action == "move_to_disposal":
@@ -492,6 +561,16 @@ class RedAgent(RobotAgent):
 
         elif action == "move_toward_red":
             self._move_toward(self.knowledge["visible_red_positions"][0])
+
+        elif action == "move_to_any_waste":
+            candidates = list({
+                *self.knowledge["visible_red_positions"],
+                *self.knowledge["visible_yellow_positions"],
+                *self.knowledge["visible_green_positions"],
+            })
+            if candidates:
+                best = max(candidates, key=lambda p: (self.model._cell_radioactivity(p), p[0], -abs(p[1] - self.pos[1])))
+                self._move_toward(best)
 
         elif action == "move_to_task":
             self._move_toward(self.current_task["target_pos"])

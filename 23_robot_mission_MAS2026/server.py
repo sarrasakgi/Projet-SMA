@@ -122,7 +122,7 @@ def GridView(model):
                     ctype = "red"
             else:  # RedAgent
                 rcolor = ROBOT_COLORS["red"]
-                ctype  = "red" if getattr(robot, "n_red_wastes", 0) else None
+                ctype  = getattr(robot, "carried_waste_type", None) if getattr(robot, "n_red_wastes", 0) else None
 
             # Outer empty circle
             ax.add_patch(mpatches.Circle(
@@ -231,12 +231,15 @@ def EventLog(model):
         return
 
     entries = list(reversed(getattr(model, "event_log", [])[-8:]))
+    heading = "### Broadcasts and claims"
+    if getattr(model, "emergency_cleanup", False):
+        heading += "\n**Emergency cleanup active:** red robots are disposing the remaining waste."
     if not entries:
-        solara.Markdown("### Broadcasts and claims\n_No signal emitted yet._")
+        solara.Markdown(heading + "\n_No signal emitted yet._")
         return
 
     content = "\n".join(f"- {entry}" for entry in entries)
-    solara.Markdown(f"### Broadcasts and claims\n{content}")
+    solara.Markdown(f"{heading}\n{content}")
 
 
 # ------------------------------------------------------------------ #

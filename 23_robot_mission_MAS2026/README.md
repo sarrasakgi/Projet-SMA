@@ -49,6 +49,8 @@ A broadcast contains the waste position and type. The **closest compatible free 
 
 Additional mandatory rule: when a green robot is carrying a yellow waste, and when a yellow robot is carrying a red waste, it must first push that waste as far east as possible within its allowed area before dropping it.
 
+If the system reaches a blocked state where no more fusion is possible, an **emergency cleanup mode** is activated: red robots are reassigned to collect the remaining waste one by one, starting with the most radioactive locations, and transport it directly to the disposal zone.
+
 ## Design choices
 
 - **Integer zone bounds** (`x_min`/`x_max`) instead of zone labels, to simplify move validation.
