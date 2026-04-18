@@ -75,6 +75,7 @@ def GridView(model):
         ax.axvline(x, color="#888888", lw=1.5, zorder=2)
 
     # ── Agents ──────────────────────────────────────────────────────
+    robot_lookup = {}
     for contents, (x, y) in model.grid.coord_iter():
         wastes  = [a for a in contents if isinstance(a, WasteAgent)]
         robots  = [a for a in contents if isinstance(a, (GreenAgent, YellowAgent, RedAgent))]
@@ -103,6 +104,7 @@ def GridView(model):
 
         # Robots: empty circle outline + small filled dot if carrying
         for robot in robots:
+            robot_lookup[getattr(robot, "unique_id", None)] = (x, y)
             if isinstance(robot, GreenAgent):
                 rcolor = ROBOT_COLORS["green"]
                 carried = getattr(robot, "n_green_wastes", 0)
@@ -133,6 +135,28 @@ def GridView(model):
                     (x, y), 0.18,
                     facecolor=WASTE_COLORS[ctype], edgecolor="none", zorder=6,
                 ))
+
+    # ── Broadcasts and task claims ──────────────────────────────────
+    for msg in getattr(model, "active_broadcasts", []):
+        tx, ty = msg["pos"]
+        sx, sy = msg["sender_pos"]
+        color = WASTE_COLORS.get(msg["waste_type"], "#444444")
+
+        ax.add_patch(mpatches.Circle(
+            (sx, sy), 0.48,
+            facecolor="none", edgecolor=color, linestyle=":", lw=1.5,
+            alpha=0.6, zorder=6,
+        ))
+        ax.add_patch(mpatches.Rectangle(
+            (tx - 0.47, ty - 0.47), 0.94, 0.94,
+            facecolor="none", edgecolor=color, linestyle="--", lw=1.8,
+            alpha=0.8, zorder=7,
+        ))
+
+        claimer_pos = robot_lookup.get(msg.get("claimed_by"))
+        if claimer_pos is not None:
+            cx, cy = claimer_pos
+            ax.plot([cx, tx], [cy, ty], color=color, linestyle=":", lw=1.3, alpha=0.85, zorder=7)
 
     # ── Legend ───────────────────────────────────────────────────────
     legend_handles = [
@@ -200,6 +224,21 @@ def StorageChart(model):
     plt.close(fig)
 
 
+@solara.component
+def EventLog(model):
+    update_counter.get()
+    if model is None:
+        return
+
+    entries = list(reversed(getattr(model, "event_log", [])[-8:]))
+    if not entries:
+        solara.Markdown("### Broadcasts and claims\n_No signal emitted yet._")
+        return
+
+    content = "\n".join(f"- {entry}" for entry in entries)
+    solara.Markdown(f"### Broadcasts and claims\n{content}")
+
+
 # ------------------------------------------------------------------ #
 #  Model params                                                        #
 # ------------------------------------------------------------------ #
@@ -229,6 +268,7 @@ def Page():
             (GridView, 0),
             (WasteChart, 0),
             (StorageChart, 0),
+            (EventLog, 0),
         ],
         model_params=model_params,
         name="Robot Mission — Group 23",

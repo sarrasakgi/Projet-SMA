@@ -53,6 +53,13 @@ class RobotMission(Model):
         self.transformed_green_to_yellow = 0
         self.transformed_yellow_to_red = 0
 
+        # État de coordination / communication
+        self.step_count = 0
+        self.broadcast_ttl = 4
+        self._next_broadcast_id = 1
+        self.active_broadcasts = []
+        self.event_log = []
+
         # DataCollector
         self.datacollector = DataCollector(
             model_reporters={
@@ -60,6 +67,7 @@ class RobotMission(Model):
                 "Yellow waste":     self.count_yellow_waste,
                 "Red waste":        self.count_red_waste,
                 "Stored red waste": lambda m: m.stored_red_waste,
+                "Active broadcasts": lambda m: len(m.active_broadcasts),
             }
         )
 
@@ -187,7 +195,11 @@ class RobotMission(Model):
  
 
     def step(self):
+        self.step_count += 1
+        self._assign_open_broadcasts()
         self.agents.shuffle_do("step")
+        self._assign_open_broadcasts()
+        self._decay_broadcasts()
         self.datacollector.collect(self)
         if (
             self.count_green_waste() == 0
@@ -209,7 +221,7 @@ class RobotMission(Model):
     def build_percepts(self, agent):
         """
         Construit le dictionnaire de percepts renvoyé à un robot.
-        Contenu pour chaque case visible (case courante + voisins Von Neumann) :
+        Contenu pour chaque case visible (case courante + carré des 8 voisines) :
           - wastes       : liste des types de déchets présents
           - robots       : liste des types de robots présents
           - zone         : identifiant de zone ("z1" / "z2" / "z3")
@@ -217,7 +229,7 @@ class RobotMission(Model):
           - is_disposal  : booléen, True si c'est la zone de dépôt
         """
         visible = [agent.pos] + list(
-            self.grid.get_neighborhood(agent.pos, moore=False, include_center=False)
+            self.grid.get_neighborhood(agent.pos, moore=True, include_center=False, radius=1)
         )
 
         tiles = {}
@@ -254,7 +266,130 @@ class RobotMission(Model):
             "current_zone": tiles[agent.pos]["zone"],
             "disposal_pos": self.disposal_pos,
             "tiles":        tiles,
+            "active_broadcasts": list(self.active_broadcasts),
         }
+
+    #  Communication / broadcast                                           
+
+    def _robot_type(self, agent):
+        if isinstance(agent, GreenAgent):
+            return "green"
+        if isinstance(agent, YellowAgent):
+            return "yellow"
+        if isinstance(agent, RedAgent):
+            return "red"
+        return "unknown"
+
+    def _robot_label(self, agent):
+        return f"{self._robot_type(agent)}#{getattr(agent, 'unique_id', '?')}"
+
+    def _robot_is_free(self, agent):
+        carried = (
+            getattr(agent, "n_green_wastes", 0)
+            + getattr(agent, "n_yellow_wastes", 0)
+            + getattr(agent, "n_red_wastes", 0)
+        )
+        return carried == 0 and getattr(agent, "current_task", None) is None
+
+    def _waste_exists(self, pos, waste_type):
+        return any(
+            isinstance(obj, WasteAgent) and obj.waste_type == waste_type
+            for obj in self.grid.get_cell_list_contents([pos])
+        )
+
+    def log_event(self, message):
+        self.event_log.append(f"S{self.step_count}: {message}")
+        self.event_log = self.event_log[-12:]
+
+    def emit_broadcast(self, sender, pos, waste_type, target_types):
+        """Create or refresh a broadcast about a visible waste location."""
+        if not self._waste_exists(pos, waste_type):
+            return
+
+        target_types = tuple(sorted(target_types))
+        for msg in self.active_broadcasts:
+            if msg["pos"] == pos and msg["waste_type"] == waste_type:
+                msg["ttl"] = self.broadcast_ttl
+                msg["sender_pos"] = sender.pos
+                msg["sender_type"] = self._robot_type(sender)
+                msg["target_types"] = target_types
+                self._assign_open_broadcasts()
+                return
+
+        msg = {
+            "id": self._next_broadcast_id,
+            "pos": pos,
+            "waste_type": waste_type,
+            "sender_pos": sender.pos,
+            "sender_type": self._robot_type(sender),
+            "target_types": target_types,
+            "ttl": self.broadcast_ttl,
+            "claimed_by": None,
+            "claimed_by_type": None,
+        }
+        self._next_broadcast_id += 1
+        self.active_broadcasts.append(msg)
+        self.log_event(
+            f"{self._robot_label(sender)} broadcasts {waste_type} waste at {pos}"
+        )
+        self._assign_open_broadcasts()
+
+    def release_task(self, agent):
+        task = getattr(agent, "current_task", None)
+        if task is None:
+            return
+        for msg in self.active_broadcasts:
+            if msg["id"] == task.get("broadcast_id") and msg.get("claimed_by") == agent.unique_id:
+                msg["claimed_by"] = None
+                msg["claimed_by_type"] = None
+        agent.current_task = None
+
+    def _assign_open_broadcasts(self):
+        for msg in self.active_broadcasts:
+            if msg.get("claimed_by") is not None:
+                continue
+
+            candidates = []
+            for agent in self.agents:
+                if self._robot_type(agent) in msg["target_types"] and self._robot_is_free(agent):
+                    distance = abs(agent.pos[0] - msg["pos"][0]) + abs(agent.pos[1] - msg["pos"][1])
+                    candidates.append((distance, -agent.pos[0], agent.unique_id, agent))
+
+            if not candidates:
+                continue
+
+            _, _, _, chosen = min(candidates)
+            chosen.current_task = {
+                "target_pos": msg["pos"],
+                "waste_type": msg["waste_type"],
+                "broadcast_id": msg["id"],
+            }
+            msg["claimed_by"] = chosen.unique_id
+            msg["claimed_by_type"] = self._robot_type(chosen)
+            self.log_event(
+                f"{self._robot_label(chosen)} claims {msg['waste_type']} at {msg['pos']}"
+            )
+
+    def _decay_broadcasts(self):
+        kept = []
+        for msg in self.active_broadcasts:
+            if not self._waste_exists(msg["pos"], msg["waste_type"]):
+                if msg.get("claimed_by") is not None:
+                    for agent in self.agents:
+                        if getattr(agent, "unique_id", None) == msg["claimed_by"]:
+                            agent.current_task = None
+                continue
+
+            if msg.get("claimed_by") is not None:
+                msg["ttl"] = max(msg.get("ttl", 1), 1)
+                kept.append(msg)
+                continue
+
+            msg["ttl"] -= 1
+            if msg["ttl"] > 0:
+                kept.append(msg)
+
+        self.active_broadcasts = kept
 
     #  Exécution des actions — méthode do()                               
   
