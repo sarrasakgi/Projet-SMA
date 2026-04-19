@@ -205,6 +205,42 @@ def StorageChart(model):
     plt.close(fig)
 
 
+@solara.component
+def TotalWasteChart(model):
+    update_counter.get()
+    if model is None or not hasattr(model, "datacollector"):
+        return
+    df = model.datacollector.get_model_vars_dataframe()
+    fig = Figure(figsize=(5, 3))
+    ax = fig.subplots()
+    if "Total waste" in df.columns:
+        ax.plot(df["Total waste"], color="#555555", label="Total waste (grid + robots)", lw=1.5)
+    ax.set_title("Total waste in system (grid + robots)", fontsize=9)
+    ax.set_xlabel("Step", fontsize=8)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    solara.FigureMatplotlib(fig, format="png")
+    plt.close(fig)
+
+
+@solara.component
+def WeightedWasteChart(model):
+    update_counter.get()
+    if model is None or not hasattr(model, "datacollector"):
+        return
+    df = model.datacollector.get_model_vars_dataframe()
+    fig = Figure(figsize=(5, 3))
+    ax = fig.subplots()
+    if "Weighted waste" in df.columns:
+        ax.plot(df["Weighted waste"], color="#7700cc", label="Weighted waste (×1/×2/×4)", lw=1.5)
+    ax.set_title("Weighted waste: green×1 + yellow×2 + red×4", fontsize=9)
+    ax.set_xlabel("Step", fontsize=8)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    solara.FigureMatplotlib(fig, format="png")
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------ #
 #  Model params                                                        #
 # ------------------------------------------------------------------ #
@@ -244,6 +280,8 @@ def Page():
             (GridView, 0),
             (WasteChart, 0),
             (StorageChart, 0),
+            (TotalWasteChart, 0),
+            (WeightedWasteChart, 0),
         ],
         model_params=model_params,
         name="Robot Mission — Group 23",

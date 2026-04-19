@@ -74,24 +74,39 @@ def _conditions_text(params):
 def plot_results(model, params=PARAMS):
     df = model.datacollector.get_model_vars_dataframe()
 
-    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
     fig.suptitle(_conditions_text(params), fontsize=9, color="#444444")
 
-    ax1 = axes[0]
+    ax1 = axes[0][0]
     for col, color in [("Green waste", "green"), ("Yellow waste", "goldenrod"), ("Red waste", "red")]:
         ax1.plot(df.index, df[col], label=col, color=color)
     ax1.set_ylabel("Waste count on grid")
-    ax1.set_title("Waste evolution over time")
+    ax1.set_title("Waste on grid over time")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
-    ax2 = axes[1]
+    ax2 = axes[0][1]
     ax2.plot(df.index, df["Stored red waste"], color="darkred", label="Stored red waste")
     ax2.set_ylabel("Cumulative stored")
-    ax2.set_xlabel("Step")
-    ax2.set_title("Cumulative red waste stored in disposal zone")
+    ax2.set_title("Cumulative red waste stored")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
+
+    ax3 = axes[1][0]
+    ax3.plot(df.index, df["Total waste"], color="#555555", label="Total waste (grid + robots)")
+    ax3.set_ylabel("Waste units")
+    ax3.set_xlabel("Step")
+    ax3.set_title("Total waste in system (grid + robots)")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
+    ax4 = axes[1][1]
+    ax4.plot(df.index, df["Weighted waste"], color="#7700cc", label="Weighted (×1/×2/×4)")
+    ax4.set_ylabel("Weighted sum")
+    ax4.set_xlabel("Step")
+    ax4.set_title("Weighted waste: green×1 + yellow×2 + red×4")
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
     filename = f"simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
