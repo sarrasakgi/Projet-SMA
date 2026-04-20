@@ -80,7 +80,7 @@ class RobotAgent(Agent):
             candidates.append((x + dx, y))
         if dy != 0:
             candidates.append((x, y + dy))
-        valid = [p for p in candidates if self.x_min <= p[0] <= self.x_max]
+        valid = [p for p in candidates if self.x_min <= p[0] <= self.x_max and self._cell_free(p)]
         if valid:
             return valid[0]
         return self._get_random_move(knowledge)
