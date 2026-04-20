@@ -33,6 +33,8 @@ class RobotMission(Model):
         n_yellow_robots=2,
         n_red_robots=1,
         initial_green_waste=12,
+        initial_yellow_waste=0,
+        initial_red_waste=0,
         seed=None,
     ):
         super().__init__()
@@ -60,6 +62,8 @@ class RobotMission(Model):
                 "Yellow waste":     self.count_yellow_waste,
                 "Red waste":        self.count_red_waste,
                 "Stored red waste": lambda m: m.stored_red_waste,
+                "Total waste":      self.count_total_waste,
+                "Weighted waste":   self.count_weighted_waste,
             }
         )
 
@@ -67,13 +71,15 @@ class RobotMission(Model):
         self._create_radioactivity_map()
         self._create_disposal_zone()
         self._create_initial_green_waste(initial_green_waste)
+        self._create_initial_waste(initial_yellow_waste, "yellow", {"z2"})
+        self._create_initial_waste(initial_red_waste, "red", {"z3"})
         self._create_robots(n_green_robots, n_yellow_robots, n_red_robots)
 
         # Collecte initiale
         self.datacollector.collect(self)
 
- 
-    #  Utilitaires internes                                          
+
+    #  Utilitaires internes
 
 
     def get_zone_from_x(self, x):
@@ -115,7 +121,7 @@ class RobotMission(Model):
         return random.choice(candidates) if candidates else None
 
 
-    #  Construction de l'environnement                                     
+    #  Construction de l'environnement
 
 
     def _create_radioactivity_map(self):
@@ -144,6 +150,13 @@ class RobotMission(Model):
             waste = WasteAgent(model=self, waste_type="green")
             self.grid.place_agent(waste, pos)
 
+    def _create_initial_waste(self, n, waste_type, zones):
+        """Place n déchets d'un type donné dans les zones spécifiées."""
+        for _ in range(n):
+            pos = self.get_random_position(allowed_zones=zones)
+            waste = WasteAgent(model=self, waste_type=waste_type)
+            self.grid.place_agent(waste, pos)
+
     def _create_robots(self, n_green, n_yellow, n_red):
         """
         Instancie les robots avec les bornes de zone correctes
@@ -159,32 +172,30 @@ class RobotMission(Model):
         z2_xmin, z2_xmax = self._zone_x_bounds("z2")
         z3_xmin, z3_xmax = self._zone_x_bounds("z3")
 
-        # Green : limité à z1
+        # Green : home = z1, spawn on leftmost column of z1
         for _ in range(n_green):
-            agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax)
-            pos = self.get_random_position(allowed_zones={"z1"})
-            self.grid.place_agent(agent, pos)
+            agent = GreenAgent(self, x_min=z1_xmin, x_max=z1_xmax,
+                               home_x_min=z1_xmin, home_x_max=z1_xmax)
+            y = random.randrange(self.height)
+            self.grid.place_agent(agent, (z1_xmin, y))
 
-        # Yellow : accès à z1 et z2
+        # Yellow : home = handoff col of z1 + z2, spawn on leftmost column of z2
         for _ in range(n_yellow):
-            agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax)
-            pos = self.get_random_position(allowed_zones={"z1", "z2"})
-            self.grid.place_agent(agent, pos)
+            agent = YellowAgent(self, x_min=z1_xmin, x_max=z2_xmax,
+                                home_x_min=z1_xmax, home_x_max=z2_xmax)
+            y = random.randrange(self.height)
+            self.grid.place_agent(agent, (z2_xmin, y))
 
-        # Red : accès à toute la grille (z1, z2, z3)
+        # Red : home = handoff col of z2 + z3, spawn on leftmost column of z3
         for _ in range(n_red):
-            agent = RedAgent(
-                self,
-                x_min=z1_xmin,
-                x_max=z3_xmax,
-                disposal_zone_pos=self.disposal_pos,
-            )
-            pos = self.get_random_position(allowed_zones={"z1", "z2", "z3"})
-            self.grid.place_agent(agent, pos)
+            agent = RedAgent(self, x_min=z1_xmin, x_max=z3_xmax,
+                             home_x_min=z2_xmax, home_x_max=z3_xmax)
+            y = random.randrange(self.height)
+            self.grid.place_agent(agent, (z3_xmin, y))
 
 
-    #  Boucle de simulation                                               
- 
+    #  Boucle de simulation
+
 
     def step(self):
         self.agents.shuffle_do("step")
@@ -197,14 +208,15 @@ class RobotMission(Model):
                 getattr(a, "n_green_wastes", 0) == 0
                 and getattr(a, "n_yellow_wastes", 0) == 0
                 and getattr(a, "n_red_wastes", 0) == 0
+                and getattr(a, "n_cleanup_wastes", 0) == 0
                 for a in self.agents
             )
         ):
             self.running = False
 
- 
-    #  Percepts                                                           
- 
+
+    #  Percepts
+
 
     def build_percepts(self, agent):
         """
@@ -215,6 +227,13 @@ class RobotMission(Model):
           - zone         : identifiant de zone ("z1" / "z2" / "z3")
           - radioactivity: niveau de radioactivité (float)
           - is_disposal  : booléen, True si c'est la zone de dépôt
+
+        Champs globaux supplémentaires (pour que deliberate() n'ait pas besoin
+        d'appeler self.model.*) :
+          - green_waste_total  : déchets verts sur grille + portés par GreenAgents
+          - yellow_waste_total : déchets jaunes sur grille + portés par YellowAgents
+          - red_waste_count    : déchets rouges sur grille
+          - disposal_pos       : position de la zone de dépôt
         """
         visible = [agent.pos] + list(
             self.grid.get_neighborhood(agent.pos, moore=False, include_center=False)
@@ -249,15 +268,27 @@ class RobotMission(Model):
                 "is_disposal":   is_disposal,
             }
 
+        # Global totals so agents can determine cleanup-mode without querying model
+        green_held = sum(
+            getattr(a, "n_green_wastes", 0) for a in self.agents
+            if isinstance(a, GreenAgent)
+        )
+        yellow_held = sum(
+            getattr(a, "n_yellow_wastes", 0) for a in self.agents
+            if isinstance(a, YellowAgent)
+        )
+
         return {
-            "self_pos":     agent.pos,
-            "current_zone": tiles[agent.pos]["zone"],
-            "disposal_pos": self.disposal_pos,
-            "tiles":        tiles,
+            "self_pos":           agent.pos,
+            "current_zone":       tiles[agent.pos]["zone"],
+            "tiles":              tiles,
+            "green_waste_total":  self.count_green_waste() + green_held,
+            "yellow_waste_total": self.count_yellow_waste() + yellow_held,
+            "red_waste_count":    self.count_red_waste(),
         }
 
-    #  Exécution des actions — méthode do()                               
-  
+    #  Exécution des actions — méthode do()
+
 
     def do(self, agent, action):
         """
@@ -273,21 +304,33 @@ class RobotMission(Model):
         if action is None:
             return self.build_percepts(agent)
 
+        action_type = action.get("type") if isinstance(action, dict) else action
+
         dispatch = {
-            "move":      self._do_move,
-            "pick":      self._do_pick,
-            "transform": self._do_transform,
-            "drop":      self._do_drop,
-            "wait":      lambda a, act: None,
+            "move":          self._do_move,
+            "pick":          self._do_pick,
+            "transform":     self._do_transform,
+            "drop":          self._do_drop,
+            "drop_green":    self._do_drop_green,
+            "drop_yellow":   self._do_drop_yellow,
+            "cleanup_pick":  self._do_cleanup_pick,
+            "cleanup_drop":  self._do_cleanup_drop,
+            "sweep_advance": self._do_sweep_advance,
+            "wait":          lambda a, act: None,
         }
 
-        handler = dispatch.get(action if isinstance(action, str) else action.get("type"))
+        handler = dispatch.get(action_type)
+        action_success = False
         if handler:
-            handler(agent, action)
+            result = handler(agent, action)
+            # pick handlers return True on success, others return None
+            action_success = result is True
 
-        return self.build_percepts(agent)
+        percepts = self.build_percepts(agent)
+        percepts["action_success"] = action_success
+        return percepts
 
-    # MOVE 
+    # MOVE
 
     def _do_move(self, agent, action):
         """
@@ -313,13 +356,13 @@ class RobotMission(Model):
 
         self.grid.move_agent(agent, new_pos)
 
-    #  PICK 
+    #  PICK
 
     def _do_pick(self, agent, action=None):
         """
         Retire un déchet de la grille sur la case de l'agent.
         L'inventaire est mis à jour par l'agent lui-même dans act().
-        
+
         Le modèle vérifie qu'il existe bien un déchet ramassable
         avant de le supprimer de la grille.
         """
@@ -336,7 +379,7 @@ class RobotMission(Model):
         for obj in self.grid.get_cell_list_contents([agent.pos]):
             if isinstance(obj, WasteAgent) and obj.waste_type == target:
                 self.grid.remove_agent(obj)
-                return  # on ne retire qu'un seul déchet par action
+                return True  # pick succeeded
 
     # TRANSFORM
 
@@ -351,7 +394,8 @@ class RobotMission(Model):
         elif isinstance(agent, YellowAgent) and agent.n_yellow_wastes >= 2:
             self.transformed_yellow_to_red += 1
 
-    # DROP 
+    # DROP
+
     def _do_drop(self, agent, action=None):
         """
         Dépose un déchet transformé sur la grille.
@@ -376,9 +420,39 @@ class RobotMission(Model):
                 self.stored_red_waste += 1
                 # Pas de WasteAgent créé : le déchet est définitivement stocké
 
+    def _do_drop_green(self, agent, action=None):
+        """GreenAgent dépose un déchet vert (patience drop)."""
+        if isinstance(agent, GreenAgent) and agent.n_green_wastes >= 1:
+            waste = WasteAgent(model=self, waste_type="green")
+            self.grid.place_agent(waste, agent.pos)
 
-    #  Statistiques                                                      
-  
+    def _do_drop_yellow(self, agent, action=None):
+        """YellowAgent dépose un déchet jaune (patience drop)."""
+        if isinstance(agent, YellowAgent) and agent.n_yellow_wastes >= 1:
+            waste = WasteAgent(model=self, waste_type="yellow")
+            self.grid.place_agent(waste, agent.pos)
+
+    def _do_cleanup_pick(self, agent, action=None):
+        """RedAgent ramasse n'importe quel déchet (mode nettoyage)."""
+        if not isinstance(agent, RedAgent):
+            return
+        for obj in self.grid.get_cell_list_contents([agent.pos]):
+            if isinstance(obj, WasteAgent):
+                self.grid.remove_agent(obj)
+                return True  # pick succeeded
+
+    def _do_cleanup_drop(self, agent, action=None):
+        """RedAgent dépose en zone de dépôt (déchet quelconque en mode nettoyage)."""
+        if isinstance(agent, RedAgent) and agent.pos == self.disposal_pos:
+            self.stored_red_waste += 1
+
+    def _do_sweep_advance(self, agent, action=None):
+        """Avance le pointeur de balayage zigzag du RedAgent."""
+        if isinstance(agent, RedAgent):
+            agent._advance_sweep()
+
+    #  Statistiques
+
 
     def count_green_waste(self):
         return self._count_waste_type("green")
@@ -397,8 +471,42 @@ class RobotMission(Model):
             if isinstance(obj, WasteAgent) and obj.waste_type == waste_type
         )
 
-   
-    #  Outils statiques                                                    
+    def count_total_waste(self):
+        """Total waste units in the system: on grid + carried by robots."""
+        grid = self.count_green_waste() + self.count_yellow_waste() + self.count_red_waste()
+        carried = sum(
+            getattr(a, "n_green_wastes", 0)
+            + getattr(a, "n_yellow_wastes", 0)
+            + getattr(a, "n_red_wastes", 0)
+            + getattr(a, "n_cleanup_wastes", 0)
+            for a in self.agents
+            if isinstance(a, (GreenAgent, YellowAgent, RedAgent))
+        )
+        return grid + carried
+
+    def count_weighted_waste(self):
+        """Weighted waste sum: green×1 + yellow×2 + red×4, on grid and in robots."""
+        weights = {"green": 1, "yellow": 2, "red": 4}
+        grid_w = sum(
+            weights.get(obj.waste_type, 0)
+            for contents, _ in self.grid.coord_iter()
+            for obj in contents
+            if isinstance(obj, WasteAgent)
+        )
+        carried_w = 0
+        for a in self.agents:
+            if isinstance(a, (GreenAgent, YellowAgent, RedAgent)):
+                carried_w += getattr(a, "n_green_wastes", 0) * 1
+                carried_w += getattr(a, "n_yellow_wastes", 0) * 2
+                carried_w += getattr(a, "n_red_wastes", 0) * 4
+                # cleanup wastes: use the tracked type if known, else assume green (1)
+                cwt = getattr(a, "cleanup_waste_type", None)
+                cw = weights.get(cwt, 1) if cwt else 1
+                carried_w += getattr(a, "n_cleanup_wastes", 0) * cw
+        return grid_w + carried_w
+
+
+    #  Outils statiques
 
 
     @staticmethod

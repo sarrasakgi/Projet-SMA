@@ -120,7 +120,12 @@ def GridView(model):
                     ctype = "red"
             else:  # RedAgent
                 rcolor = ROBOT_COLORS["red"]
-                ctype  = "red" if getattr(robot, "n_red_wastes", 0) else None
+                if getattr(robot, "n_red_wastes", 0):
+                    ctype = "red"
+                elif getattr(robot, "n_cleanup_wastes", 0):
+                    ctype = getattr(robot, "cleanup_waste_type", None) or "green"
+                else:
+                    ctype = None
 
             # Outer empty circle
             ax.add_patch(mpatches.Circle(
@@ -200,25 +205,71 @@ def StorageChart(model):
     plt.close(fig)
 
 
+@solara.component
+def TotalWasteChart(model):
+    update_counter.get()
+    if model is None or not hasattr(model, "datacollector"):
+        return
+    df = model.datacollector.get_model_vars_dataframe()
+    fig = Figure(figsize=(5, 3))
+    ax = fig.subplots()
+    if "Total waste" in df.columns:
+        ax.plot(df["Total waste"], color="#555555", label="Total waste (grid + robots)", lw=1.5)
+    ax.set_title("Total waste in system (grid + robots)", fontsize=9)
+    ax.set_xlabel("Step", fontsize=8)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    solara.FigureMatplotlib(fig, format="png")
+    plt.close(fig)
+
+
+@solara.component
+def WeightedWasteChart(model):
+    update_counter.get()
+    if model is None or not hasattr(model, "datacollector"):
+        return
+    df = model.datacollector.get_model_vars_dataframe()
+    fig = Figure(figsize=(5, 3))
+    ax = fig.subplots()
+    if "Weighted waste" in df.columns:
+        ax.plot(df["Weighted waste"], color="#7700cc", label="Weighted waste (×1/×2/×4)", lw=1.5)
+    ax.set_title("Weighted waste: green×1 + yellow×2 + red×4", fontsize=9)
+    ax.set_xlabel("Step", fontsize=8)
+    ax.legend(fontsize=7)
+    fig.tight_layout()
+    solara.FigureMatplotlib(fig, format="png")
+    plt.close(fig)
+
+
 # ------------------------------------------------------------------ #
 #  Model params                                                        #
 # ------------------------------------------------------------------ #
 
 model_params = {
-    "width":               Slider("Grid width",          value=12, min=6,  max=24, step=3),
-    "height":              Slider("Grid height",         value=8,  min=4,  max=16, step=2),
-    "n_green_robots":      Slider("Green robots",        value=2,  min=1,  max=6,  step=1),
-    "n_yellow_robots":     Slider("Yellow robots",       value=2,  min=1,  max=6,  step=1),
-    "n_red_robots":        Slider("Red robots",          value=1,  min=1,  max=4,  step=1),
-    "initial_green_waste": Slider("Initial green waste", value=12, min=2,  max=30, step=2),
-    "seed":                None,
+    "width":                Slider("Grid width",           value=12, min=6,  max=24, step=3),
+    "height":               Slider("Grid height",          value=8,  min=4,  max=16, step=2),
+    "n_green_robots":       Slider("Green robots",         value=2,  min=1,  max=6,  step=1),
+    "n_yellow_robots":      Slider("Yellow robots",        value=2,  min=1,  max=6,  step=1),
+    "n_red_robots":         Slider("Red robots",           value=1,  min=1,  max=4,  step=1),
+    "initial_green_waste":  Slider("Initial green waste",  value=12, min=0,  max=30, step=1),
+    "initial_yellow_waste": Slider("Initial yellow waste", value=0,  min=0,  max=20, step=1),
+    "initial_red_waste":    Slider("Initial red waste",    value=0,  min=0,  max=10, step=1),
+    "seed":                 None,
 }
 
 # ------------------------------------------------------------------ #
 #  App entry point                                                     #
 # ------------------------------------------------------------------ #
 
-initial_model = RobotMission()
+import random as _random
+initial_model = RobotMission(
+    n_green_robots=_random.randint(1, 6),
+    n_yellow_robots=_random.randint(1, 6),
+    n_red_robots=_random.randint(1, 4),
+    initial_green_waste=_random.randint(0, 30),
+    initial_yellow_waste=_random.randint(0, 20),
+    initial_red_waste=_random.randint(0, 10),
+)
 
 
 @solara.component
@@ -229,6 +280,8 @@ def Page():
             (GridView, 0),
             (WasteChart, 0),
             (StorageChart, 0),
+            (TotalWasteChart, 0),
+            (WeightedWasteChart, 0),
         ],
         model_params=model_params,
         name="Robot Mission — Group 23",
