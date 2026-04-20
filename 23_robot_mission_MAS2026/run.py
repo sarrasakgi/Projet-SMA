@@ -40,11 +40,17 @@ def run_simulation(params=PARAMS, max_steps=MAX_STEPS, verbose=True):
     model = RobotMission(**params)
 
     for step in range(max_steps):
-        # Stop early if all waste has been stored
+        # Stop early only when the grid and all robot inventories are empty
         if (
             model.count_green_waste() == 0
             and model.count_yellow_waste() == 0
             and model.count_red_waste() == 0
+            and all(
+                getattr(a, "n_green_wastes", 0) == 0
+                and getattr(a, "n_yellow_wastes", 0) == 0
+                and getattr(a, "n_red_wastes", 0) == 0
+                for a in model.agents
+            )
         ):
             if verbose:
                 print(f"All waste cleared at step {step}.")
@@ -57,8 +63,8 @@ def run_simulation(params=PARAMS, max_steps=MAX_STEPS, verbose=True):
         print(f"  Yellow waste remaining: {model.count_yellow_waste()}")
         print(f"  Red waste remaining   : {model.count_red_waste()}")
         print(f"  Stored red waste      : {model.stored_red_waste}")
-        print(f"  Green→Yellow transforms: {model.transformed_green_to_yellow}")
-        print(f"  Yellow→Red transforms  : {model.transformed_yellow_to_red}")
+        print(f"  Green->Yellow transforms: {model.transformed_green_to_yellow}")
+        print(f"  Yellow->Red transforms  : {model.transformed_yellow_to_red}")
 
     return model
 
@@ -180,7 +186,13 @@ if __name__ == "__main__":
     import sys
     if "--viz" in sys.argv:
         import subprocess
-        subprocess.run([sys.executable, "-m", "solara", "run", "server.py", "--port", "8521"])
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "solara", "run", "server.py", "--port", "8521"],
+                check=False,
+            )
+        except KeyboardInterrupt:
+            print("\nVisualization stopped cleanly.")
     elif "--compare" in sys.argv:
         results = run_all_scenarios()
         plot_comparison(results)

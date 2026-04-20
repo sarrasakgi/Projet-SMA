@@ -43,7 +43,13 @@ python run.py --viz
 | Yellow | z1–z2 | Picks 2 yellow wastes → transforms into 1 red → drops |
 | Red | z1–z3 | Picks 1 red waste → carries it to the disposal zone |
 
-Each robot follows the loop **perceive → update → deliberate → act**. In Step 1 (no communication), coordination is purely spatial: one robot drops a transformed waste, another picks it up while exploring.
+Each robot follows the loop **perceive → update → deliberate → act**. Robots now scan the **8 surrounding cells** and can emit local broadcasts when they detect a waste they cannot or should not handle themselves.
+
+A broadcast contains the waste position and type. The **closest compatible free robot** claims the task, and the interactive view shows this with a signal halo on the sender, a dashed outline on the target waste, and a dotted line from the robot that accepted the mission.
+
+Additional mandatory rule: when a green robot is carrying a yellow waste, and when a yellow robot is carrying a red waste, it must first push that waste as far east as possible within its allowed area before dropping it.
+
+If the system reaches a blocked state where no more fusion is possible, an **emergency cleanup mode** is activated: red robots are reassigned to collect the remaining waste one by one, starting with the most radioactive locations, and transport it directly to the disposal zone.
 
 ## Design choices
 
